@@ -70,8 +70,9 @@ func (r rrs) ToAXFRResourceRecordSet() models.AXFRResourceRecordSet {
 type rrsKind string
 
 const (
-	// A record types
-	A rrsKind = "A"
+	// A, AAAA record types
+	A    rrsKind = "A"
+	AAAA rrsKind = "AAAA"
 	// SRV record types
 	SRV = "SRV"
 )
@@ -80,6 +81,8 @@ func (kind rrsKind) rrs(rg *RecordGenerator) rrs {
 	switch kind {
 	case A:
 		return rg.As
+	case AAAA:
+		return rg.AAAAs
 	case SRV:
 		return rg.SRVs
 	default:
@@ -91,6 +94,7 @@ func (kind rrsKind) rrs(rg *RecordGenerator) rrs {
 // them. TODO(kozyraki): Refactor when discovery id is available.
 type RecordGenerator struct {
 	As          rrs
+	AAAAs       rrs
 	SRVs        rrs
 	SlaveIPs    map[string]string
 	EnumData    EnumerationData
@@ -212,6 +216,53 @@ func hostToIP4(hostname string) (string, bool) {
 	return ip.String(), true
 }
 
+// hostToIPs attempts to parse hostname into an ip. If that doesn't work it will perform a
+// lookup and try to find all ipv4 and ipv6 ips in the results.
+func hostToIPs(hostname string) []net.IP {
+	ips := []net.IP{}
+	parsedIP := net.ParseIP(hostname)
+	if ip := parsedIP.To4(); ip != nil {
+		ips = append(ips, ip)
+	} else if ip = parsedIP.To16(); ip != nil {
+		ips = append(ips, ip)
+	} else if addrs, err := net.LookupIP(hostname); err == nil {
+		for _, lookupIP := range addrs {
+			if ip := lookupIP.To4(); ip != nil {
+				ips = append(ips, ip)
+			} else if ip := lookupIP.To16(); ip != nil {
+				ips = append(ips, ip)
+			}
+		}
+	} else {
+		logging.Error.Printf("cannot translate hostname %q into ip addresses: %v", hostname, err)
+	}
+
+	return ips
+}
+
+// func hostToIPs(hostname string) []net.IP {
+// 	ips := []net.IP{}
+// 	parsedIP := net.ParseIP(hostname)
+// 	if ip := parsedIP.To4(); ip != nil {
+// 		ips = append(ips, ip)
+// 	} else if ip = parsedIP.To16(); ip != nil {
+// 		ips = append(ips, ip)
+// 	} else {
+// 		if t, err := net.ResolveIPAddr("ip4", hostname); err == nil {
+// 			ips = append(ips, t.IP.To4())
+// 		}
+// 		if t, err := net.ResolveIPAddr("ip6", hostname); err == nil {
+// 			ips = append(ips, t.IP.To16())
+// 		}
+// 	}
+
+// 	if len(ips) == 0 {
+// 		logging.Error.Printf("cannot translate hostname %q into ip addresses", hostname)
+// 	}
+
+// 	return ips
+// }
+
 // InsertState transforms a StateJSON into RecordGenerator RRs
 func (rg *RecordGenerator) InsertState(sj state.State, domain, ns, listener string, masters, ipSources []string, spec labels.Func) error {
 
@@ -234,9 +285,15 @@ func (rg *RecordGenerator) frameworkRecords(sj state.State, domain string, spec 
 	for _, f := range sj.Frameworks {
 		fname := labels.DomainFrag(f.Name, labels.Sep, spec)
 		host, port := f.HostPort()
-		if address, ok := hostToIP4(host); ok {
+		if addrs := hostToIPs(host); len(addrs) > 0 {
 			a := fname + "." + domain + "."
-			rg.insertRR(a, address, A)
+			for _, addr := range addrs {
+				if len(addr) == 4 {
+					rg.insertRR(a, addr.String(), A)
+				} else if len(addr) == 16 {
+					rg.insertRR(a, addr.String(), AAAA)
+				}
+			}
 			if port != "" {
 				srvAddress := net.JoinHostPort(a, port)
 				rg.insertRR("_framework._tcp."+a, srvAddress, SRV)
@@ -249,18 +306,29 @@ func (rg *RecordGenerator) frameworkRecords(sj state.State, domain string, spec 
 //     slave.domain.      // resolves to IPs of all slaves
 //     _slave._tcp.domain. // resolves to the driver port and IP of all slaves
 func (rg *RecordGenerator) slaveRecords(sj state.State, domain string, spec labels.Func) {
+	slaveIP := ""
 	for _, slave := range sj.Slaves {
-		address, ok := hostToIP4(slave.PID.Host)
-		if ok {
+		if addrs := hostToIPs(slave.PID.Host); len(addrs) > 0 {
 			a := "slave." + domain + "."
-			rg.insertRR(a, address, A)
+			for _, addr := range addrs {
+				if len(addr) == 4 {
+					if slaveIP == "" {
+						slaveIP = addr.String()
+					}
+					rg.insertRR(a, addr.String(), A)
+				} else if len(addr) == 16 {
+					rg.insertRR(a, addr.String(), AAAA)
+				}
+			}
 			srv := net.JoinHostPort(a, slave.PID.Port)
 			rg.insertRR("_slave._tcp."+domain+".", srv, SRV)
 		} else {
-			logging.VeryVerbose.Printf("string '%q' for slave with id %q is not a valid IP address", address, slave.ID)
-			address = labels.DomainFrag(address, labels.Sep, spec)
+			logging.VeryVerbose.Printf("string '%q' for slave with id %q is not a valid IP address", slave.PID.Host, slave.ID)
 		}
-		rg.SlaveIPs[slave.ID] = address
+		if slaveIP == "" {
+			slaveIP = labels.DomainFrag(slave.PID.Host, labels.Sep, spec)
+		}
+		rg.SlaveIPs[slave.ID] = slaveIP
 	}
 }
 
@@ -300,14 +368,28 @@ func (rg *RecordGenerator) masterRecord(domain string, masters []string, leader 
 	}
 	leaderAddress := h[1]
 	ip, port, err := urls.SplitHostPort(leaderAddress)
+
+	leaderRecord := "leader." + domain + "."
+	allMasterRecord := "master." + domain + "."
+	if addrs := hostToIPs(ip); len(addrs) > 0 {
+		for _, addr := range addrs {
+			if len(addr) == 4 {
+				rg.insertRR(leaderRecord, addr.String(), A)
+				rg.insertRR(allMasterRecord, addr.String(), A)
+			} else if len(addr) == 16 {
+				rg.insertRR(leaderRecord, addr.String(), AAAA)
+				rg.insertRR(allMasterRecord, addr.String(), AAAA)
+			}
+		}
+	} else {
+		rg.insertRR(leaderRecord, ip, A)
+		rg.insertRR(allMasterRecord, ip, A)
+	}
+
 	if err != nil {
 		logging.Error.Println(err)
 		return
 	}
-	leaderRecord := "leader." + domain + "."
-	rg.insertRR(leaderRecord, ip, A)
-	allMasterRecord := "master." + domain + "."
-	rg.insertRR(allMasterRecord, ip, A)
 
 	// SRV records
 	tcp := "_leader._tcp." + domain + "."
