@@ -73,6 +73,14 @@ func TestMasterRecord(t *testing.T) {
 				{"_leader._tcp.foo.com.", "leader.foo.com.:7", SRV},
 				{"_leader._udp.foo.com.", "leader.foo.com.:7", SRV},
 			}},
+		{"foo.com", nil, "5@[2001:db8::1]:7",
+			[]expectedRR{
+				{"leader.foo.com.", "2001:db8::1", AAAA},
+				{"master.foo.com.", "2001:db8::1", AAAA},
+				{"master0.foo.com.", "2001:db8::1", AAAA},
+				{"_leader._tcp.foo.com.", "leader.foo.com.:7", SRV},
+				{"_leader._udp.foo.com.", "leader.foo.com.:7", SRV},
+			}},
 		// single master: leader and fallback
 		{"foo.com", []string{"6:7"}, "5@6:7",
 			[]expectedRR{
@@ -143,6 +151,7 @@ func TestMasterRecord(t *testing.T) {
 	for i, tc := range tt {
 		rg := &RecordGenerator{}
 		rg.As = make(rrs)
+		rg.AAAAs = make(rrs)
 		rg.SRVs = make(rrs)
 		t.Logf("test case %d", i+1)
 		rg.masterRecord(tc.domain, tc.masters, tc.leader)
@@ -155,15 +164,18 @@ func TestMasterRecord(t *testing.T) {
 			}
 		}
 		expectedA := make(rrs)
+		expectedAAAA := make(rrs)
 		expectedSRV := make(rrs)
 		for _, e := range tc.expect {
 			found := rg.exists(e.name, e.host, e.kind)
 			if !found {
-				t.Fatalf("test case %d: missing expected record: name=%q host=%q kind=%s, As=%v", i+1, e.name, e.host, e.kind, rg.As)
+				t.Fatalf("test case %d: missing expected record: name=%q host=%q kind=%s, As=%v, AAAAs=%v", i+1, e.name, e.host, e.kind, rg.As, rg.AAAAs)
 			}
 			switch e.kind {
 			case A:
 				expectedA.add(e.name, e.host)
+			case AAAA:
+				expectedAAAA.add(e.name, e.host)
 			case SRV:
 				expectedSRV.add(e.name, e.host)
 			default:
@@ -172,6 +184,9 @@ func TestMasterRecord(t *testing.T) {
 		}
 		if !reflect.DeepEqual(rg.As, expectedA) {
 			t.Fatalf("test case %d: expected As of %v instead of %v", i+1, expectedA, rg.As)
+		}
+		if !reflect.DeepEqual(rg.AAAAs, expectedAAAA) {
+			t.Fatalf("test case %d: expected AAAAs of %v instead of %v", i+1, expectedAAAA, rg.AAAAs)
 		}
 		if !reflect.DeepEqual(rg.SRVs, expectedSRV) {
 			t.Fatalf("test case %d: expected SRVs of %v instead of %v", i+1, expectedSRV, rg.SRVs)
@@ -283,7 +298,7 @@ func TestInsertState(t *testing.T) {
 			if len(got) == 0 && len(want) == 0 {
 				continue
 			}
-			t.Errorf("test #%d: %q: got: %q, want: %q", i, tt.name, got, want)
+			t.Errorf("test #%d: %q: got: %q, want: %q", i+1, tt.name, got, want)
 		}
 	}
 }

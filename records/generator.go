@@ -225,16 +225,25 @@ func hostToIPs(hostname string) []net.IP {
 		ips = append(ips, ip)
 	} else if ip = parsedIP.To16(); ip != nil {
 		ips = append(ips, ip)
-	} else if addrs, err := net.LookupIP(hostname); err == nil {
-		for _, lookupIP := range addrs {
-			if ip := lookupIP.To4(); ip != nil {
-				ips = append(ips, ip)
-			} else if ip := lookupIP.To16(); ip != nil {
-				ips = append(ips, ip)
-			}
-		}
+		// } else if addrs, err := net.LookupIP(hostname); err == nil {
+		// 	for _, lookupIP := range addrs {
+		// 		if ip := lookupIP.To4(); ip != nil {
+		// 			ips = append(ips, ip)
+		// 		} else if ip := lookupIP.To16(); ip != nil {
+		// 			ips = append(ips, ip)
+		// 		}
+		// 	}
 	} else {
-		logging.Error.Printf("cannot translate hostname %q into ip addresses: %v", hostname, err)
+		if t, err := net.ResolveIPAddr("ip4", hostname); err == nil {
+			ips = append(ips, t.IP.To4())
+		}
+		if t, err := net.ResolveIPAddr("ip6", hostname); err == nil {
+			ips = append(ips, t.IP.To16())
+		}
+	}
+
+	if len(ips) == 0 {
+		logging.Error.Printf("cannot translate hostname %q into ip addresses", hostname)
 	}
 
 	return ips
@@ -306,8 +315,8 @@ func (rg *RecordGenerator) frameworkRecords(sj state.State, domain string, spec 
 //     slave.domain.      // resolves to IPs of all slaves
 //     _slave._tcp.domain. // resolves to the driver port and IP of all slaves
 func (rg *RecordGenerator) slaveRecords(sj state.State, domain string, spec labels.Func) {
-	slaveIP := ""
 	for _, slave := range sj.Slaves {
+		slaveIP := ""
 		if addrs := hostToIPs(slave.PID.Host); len(addrs) > 0 {
 			a := "slave." + domain + "."
 			for _, addr := range addrs {
@@ -360,7 +369,7 @@ func (rg *RecordGenerator) slaveRecords(sj state.State, domain string, spec labe
 // list. There are probably better ways to do it.
 func (rg *RecordGenerator) masterRecord(domain string, masters []string, leader string) {
 	// create records for leader
-	// A records
+	// A and AAAA records
 	h := strings.Split(leader, "@")
 	if len(h) < 2 {
 		logging.Error.Println(leader)
@@ -368,19 +377,19 @@ func (rg *RecordGenerator) masterRecord(domain string, masters []string, leader 
 	}
 	leaderAddress := h[1]
 	ip, port, err := urls.SplitHostPort(leaderAddress)
+	parsedIP := net.ParseIP(ip)
+	if parsedIP.To4() != nil {
+		parsedIP = parsedIP.To4()
+	} else if parsedIP.To16() != nil {
+		parsedIP = parsedIP.To16()
+	}
 
 	leaderRecord := "leader." + domain + "."
 	allMasterRecord := "master." + domain + "."
-	if addrs := hostToIPs(ip); len(addrs) > 0 {
-		for _, addr := range addrs {
-			if len(addr) == 4 {
-				rg.insertRR(leaderRecord, addr.String(), A)
-				rg.insertRR(allMasterRecord, addr.String(), A)
-			} else if len(addr) == 16 {
-				rg.insertRR(leaderRecord, addr.String(), AAAA)
-				rg.insertRR(allMasterRecord, addr.String(), AAAA)
-			}
-		}
+
+	if len(parsedIP) == 16 {
+		rg.insertRR(leaderRecord, ip, AAAA)
+		rg.insertRR(allMasterRecord, ip, AAAA)
 	} else {
 		rg.insertRR(leaderRecord, ip, A)
 		rg.insertRR(allMasterRecord, ip, A)
@@ -408,9 +417,22 @@ func (rg *RecordGenerator) masterRecord(domain string, masters []string, leader 
 			continue
 		}
 
-		// A records (master and masterN)
+		parsedMasterIP := net.ParseIP(masterIP)
+		if parsedMasterIP.To4() != nil {
+			parsedMasterIP = parsedMasterIP.To4()
+		} else if parsedIP.To16() != nil {
+			parsedMasterIP = parsedMasterIP.To16()
+		}
+
+		// A and AAAA records (master and masterN)
 		if master != leaderAddress {
-			added := rg.insertRR(allMasterRecord, masterIP, A)
+			var added bool
+			if len(parsedMasterIP) == 16 {
+				added = rg.insertRR(allMasterRecord, masterIP, AAAA)
+			} else {
+				added = rg.insertRR(allMasterRecord, masterIP, A)
+			}
+
 			if !added {
 				// duplicate master?!
 				continue
@@ -423,7 +445,11 @@ func (rg *RecordGenerator) masterRecord(domain string, masters []string, leader 
 		}
 
 		perMasterRecord := "master" + strconv.Itoa(idx) + "." + domain + "."
-		rg.insertRR(perMasterRecord, masterIP, A)
+		if len(parsedMasterIP) == 16 {
+			rg.insertRR(perMasterRecord, masterIP, AAAA)
+		} else {
+			rg.insertRR(perMasterRecord, masterIP, A)
+		}
 		idx++
 
 		if master == leaderAddress {
@@ -437,18 +463,32 @@ func (rg *RecordGenerator) masterRecord(domain string, masters []string, leader 
 			logging.Error.Printf("warning: leader %q is not in master list", leader)
 		}
 		extraMasterRecord := "master" + strconv.Itoa(idx) + "." + domain + "."
-		rg.insertRR(extraMasterRecord, ip, A)
+		if len(parsedIP) == 16 {
+			rg.insertRR(extraMasterRecord, ip, AAAA)
+		} else {
+			rg.insertRR(extraMasterRecord, ip, A)
+		}
 	}
 }
 
-// A record for mesos-dns (the name is listed in SOA replies)
+// A or AAAA record for mesos-dns (the name is listed in SOA replies)
 func (rg *RecordGenerator) listenerRecord(listener string, ns string) {
 	if listener == "0.0.0.0" {
 		rg.setFromLocal(listener, ns)
 	} else if listener == "127.0.0.1" {
 		rg.insertRR(ns, "127.0.0.1", A)
 	} else {
-		rg.insertRR(ns, listener, A)
+		// TODO: rework this
+		if parsedIP := net.ParseIP(listener).To4(); parsedIP != nil {
+			logging.Error.Printf("A listener: %v", listener)
+			rg.insertRR(ns, listener, A)
+		} else if parsedIP := net.ParseIP(listener).To16(); parsedIP != nil {
+			logging.Error.Printf("AAAA listener: %v", listener)
+			rg.insertRR(ns, listener, AAAA)
+		} else {
+			logging.Error.Printf("A listener (fallthrough): %v", listener)
+			rg.insertRR(ns, listener, A)
+		}
 	}
 }
 
@@ -514,15 +554,32 @@ func (rg *RecordGenerator) taskContextRecord(ctx context, task state.Task, f sta
 
 	tail := "." + domain + "."
 
-	// insert canonical A records
+	// insert canonical A / AAAA records
 	canonical := ctx.taskName + "-" + ctx.taskID + "-" + ctx.slaveID + "." + fname
 	arec := ctx.taskName + "." + fname
 
-	rg.insertTaskRR(arec+tail, ctx.taskIP, A, enumTask)
-	rg.insertTaskRR(canonical+tail, ctx.taskIP, A, enumTask)
+	//TODO: rework this
+	if parsedIP := net.ParseIP(ctx.taskIP).To4(); parsedIP != nil {
+		rg.insertTaskRR(arec+tail, ctx.taskIP, A, enumTask)
+		rg.insertTaskRR(canonical+tail, ctx.taskIP, A, enumTask)
+	} else if parsedIP := net.ParseIP(ctx.taskIP).To16(); parsedIP != nil {
+		rg.insertTaskRR(arec+tail, ctx.taskIP, AAAA, enumTask)
+		rg.insertTaskRR(canonical+tail, ctx.taskIP, AAAA, enumTask)
+	} else {
+		rg.insertTaskRR(arec+tail, ctx.taskIP, AAAA, enumTask)
+		rg.insertTaskRR(canonical+tail, ctx.taskIP, AAAA, enumTask)
+	}
 
-	rg.insertTaskRR(arec+".slave"+tail, ctx.slaveIP, A, enumTask)
-	rg.insertTaskRR(canonical+".slave"+tail, ctx.slaveIP, A, enumTask)
+	if parsedIP := net.ParseIP(ctx.slaveIP).To4(); parsedIP != nil {
+		rg.insertTaskRR(arec+".slave"+tail, ctx.slaveIP, A, enumTask)
+		rg.insertTaskRR(canonical+".slave"+tail, ctx.slaveIP, A, enumTask)
+	} else if parsedIP := net.ParseIP(ctx.slaveIP).To16(); parsedIP != nil {
+		rg.insertTaskRR(arec+".slave"+tail, ctx.slaveIP, AAAA, enumTask)
+		rg.insertTaskRR(canonical+".slave"+tail, ctx.slaveIP, AAAA, enumTask)
+	} else {
+		rg.insertTaskRR(arec+".slave"+tail, ctx.slaveIP, A, enumTask)
+		rg.insertTaskRR(canonical+".slave"+tail, ctx.slaveIP, A, enumTask)
+	}
 
 	// recordName generates records for ctx.taskName, given some generation chain
 	recordName := func(gen chain) { gen("_" + ctx.taskName) }
@@ -594,12 +651,11 @@ func (rg *RecordGenerator) setFromLocal(host string, ns string) {
 				continue
 			}
 
-			ip = ip.To4()
-			if ip == nil {
-				continue
+			if ip.To4() != nil {
+				rg.insertRR(ns, ip.String(), A)
+			} else if ip.To16() != nil {
+				rg.insertRR(ns, ip.String(), AAAA)
 			}
-
-			rg.insertRR(ns, ip.String(), A)
 		}
 	}
 }
