@@ -70,8 +70,9 @@ func (r rrs) ToAXFRResourceRecordSet() models.AXFRResourceRecordSet {
 type rrsKind string
 
 const (
-	// A, AAAA record types
-	A    rrsKind = "A"
+	// A record types
+	A rrsKind = "A"
+	// AAAA record types
 	AAAA rrsKind = "AAAA"
 	// SRV record types
 	SRV = "SRV"
