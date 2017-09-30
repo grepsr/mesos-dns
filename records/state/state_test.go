@@ -6,8 +6,8 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/mesos/mesos-go/api/v0/upid"
 	. "github.com/mesosphere/mesos-dns/records/state"
+	"github.com/mesosphere/mesos-dns/records/state/upid"
 )
 
 func TestResources_Ports(t *testing.T) {
@@ -30,6 +30,7 @@ func TestPID_UnmarshalJSON(t *testing.T) {
 		{`"slave(1)@127.0.0.1:5051"`, makePID("slave(1)", "127.0.0.1", "5051"), nil},
 		{`  "slave(1)@127.0.0.1:5051"  `, makePID("slave(1)", "127.0.0.1", "5051"), nil},
 		{`"  slave(1)@127.0.0.1:5051  "`, makePID("slave(1)", "127.0.0.1", "5051"), nil},
+		{`"  slave(1)@[2001:db8::1]:5051  "`, makePID("slave(1)", "2001:db8::1", "5051"), nil},
 	} {
 		var pid PID
 		if err := json.Unmarshal([]byte(tt.data), &pid); !reflect.DeepEqual(err, tt.err) {

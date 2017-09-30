@@ -248,19 +248,19 @@ func (rg *RecordGenerator) slaveRecords(sj state.State, domain string, spec labe
 	for _, slave := range sj.Slaves {
 		slaveIP := ""
 		if ipv4, ipv6, ok := hostToIPs(slave.PID.Host); ok {
-			if ipv4 != nil {
-				rg.insertRR(a, ipv4.String(), A)
-				// Only use ipv4 for slaveIP for now
-				slaveIP = ipv4.String()
-			}
 			if ipv6 != nil {
 				rg.insertRR(a, ipv6.String(), AAAA)
+				slaveIP = ipv6.String()
+			}
+			if ipv4 != nil {
+				rg.insertRR(a, ipv4.String(), A)
+				// Prefer ipv4 for slaveIP
+				slaveIP = ipv4.String()
 			}
 			srv := net.JoinHostPort(a, slave.PID.Port)
 			rg.insertRR("_slave._tcp."+domain+".", srv, SRV)
 		} else {
 			logging.VeryVerbose.Printf("string '%q' for slave with id %q is not a valid IP address", slave.PID.Host, slave.ID)
-			slaveIP = labels.DomainFrag(slave.PID.Host, labels.Sep, spec)
 		}
 		if slaveIP == "" {
 			slaveIP = labels.DomainFrag(slave.PID.Host, labels.Sep, spec)

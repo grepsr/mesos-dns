@@ -38,12 +38,17 @@ func TestParseState_SOAMname(t *testing.T) {
 		s.Leader = "foo@123:45" // required or else ParseState bails
 		return
 	}
-	err := rg.ParseState(Config{SOAMname: "jdef123.mesos.", Listener: "4.5.6.7"})
-	if err != nil {
+	cfg1 := Config{SOAMname: "jdef123.mesos.", Listener: "4.5.6.7"}
+	if err := rg.ParseState(cfg1); err != nil {
 		t.Fatal("unexpected error", err)
-	}
-	if !rg.exists("jdef123.mesos.", "4.5.6.7", A) {
+	} else if !rg.exists("jdef123.mesos.", "4.5.6.7", A) {
 		t.Fatalf("failed to locate A record for SOAMname, A records: %#v", rg.As)
+	}
+	cfg2 := Config{SOAMname: "ack456.mesos.", Listener: "2001:db8::1"}
+	if err := rg.ParseState(cfg2); err != nil {
+		t.Fatal("unexpected error", err)
+	} else if !rg.exists("ack456.mesos.", "2001:db8::1", AAAA) {
+		t.Fatalf("failed to locate AAAA record for SOAMname, AAAA records: %#v", rg.AAAAs)
 	}
 }
 
@@ -147,6 +152,18 @@ func TestMasterRecord(t *testing.T) {
 				{"_leader._tcp.foo.com.", "leader.foo.com.:7", SRV},
 				{"_leader._udp.foo.com.", "leader.foo.com.:7", SRV},
 			}},
+		{"foo.com", []string{"8:9", "6:7", "[2001:db8::1]:0"}, "5@6:7",
+			[]expectedRR{
+				{"leader.foo.com.", "6", A},
+				{"master.foo.com.", "6", A},
+				{"master.foo.com.", "8", A},
+				{"master.foo.com.", "2001:db8::1", AAAA},
+				{"master0.foo.com.", "8", A},
+				{"master1.foo.com.", "6", A},
+				{"master2.foo.com.", "2001:db8::1", AAAA},
+				{"_leader._tcp.foo.com.", "leader.foo.com.:7", SRV},
+				{"_leader._udp.foo.com.", "leader.foo.com.:7", SRV},
+			}},
 	}
 	for i, tc := range tt {
 		rg := &RecordGenerator{}
@@ -240,6 +257,12 @@ func TestInsertState(t *testing.T) {
 		{rg.As, "slave.mesos.", []string{"1.2.3.10", "1.2.3.11", "1.2.3.12"}},
 		{rg.As, "some-box.chronoswithaspaceandmixe.mesos.", []string{"1.2.3.11"}}, // ensure we translate the framework name as well
 		{rg.As, "marathon.mesos.", []string{"1.2.3.11"}},
+
+		{rg.AAAAs, "toy-store.ipv6-framework.mesos.", []string{"2001:db8:85a3::8a2e:370:7334"}},
+		{rg.AAAAs, "toy-store.ipv6-framework.slave.mesos.", []string{"2001:db8::1"}},
+		{rg.AAAAs, "ipv6-framework.mesos.", []string{"2001:db8::1"}},
+		{rg.AAAAs, "slave.mesos.", []string{"2001:db8::1"}},
+
 		{rg.SRVs, "_big-dog._tcp.marathon.mesos.", []string{
 			"big-dog-4dfjd-0.marathon.mesos.:80",
 			"big-dog-4dfjd-0.marathon.mesos.:443",
@@ -278,15 +301,23 @@ func TestInsertState(t *testing.T) {
 		{rgSlave.As, "nginx.marathon.mesos.", []string{"1.2.3.11"}},
 		{rgSlave.As, "car-store.marathon.slave.mesos.", []string{"1.2.3.11"}},
 
+		{rgSlave.AAAAs, "toy-store.ipv6-framework.mesos.", []string{"2001:db8::1"}},
+		{rgSlave.AAAAs, "toy-store.ipv6-framework.slave.mesos.", []string{"2001:db8::1"}},
+
 		{rgMesos.As, "liquor-store.marathon.mesos.", []string{"1.2.3.11", "1.2.3.12"}},
 		{rgMesos.As, "liquor-store.marathon.slave.mesos.", []string{"1.2.3.11", "1.2.3.12"}},
 		{rgMesos.As, "nginx.marathon.mesos.", []string{"10.3.0.3"}},
 		{rgMesos.As, "car-store.marathon.slave.mesos.", []string{"1.2.3.11"}},
 
+		{rgMesos.AAAAs, "toy-store.ipv6-framework.mesos.", []string{"2001:db8::1"}},
+		{rgMesos.AAAAs, "toy-store.ipv6-framework.slave.mesos.", []string{"2001:db8::1"}},
+
 		{rgDocker.As, "liquor-store.marathon.mesos.", []string{"10.3.0.1", "10.3.0.2"}},
 		{rgDocker.As, "liquor-store.marathon.slave.mesos.", []string{"1.2.3.11", "1.2.3.12"}},
 		{rgDocker.As, "nginx.marathon.mesos.", []string{"1.2.3.11"}},
 		{rgDocker.As, "car-store.marathon.slave.mesos.", []string{"1.2.3.11"}},
+		{rgDocker.AAAAs, "toy-store.ipv6-framework.mesos.", []string{"2001:db8:85a3::8a2e:370:7334"}},
+		{rgDocker.AAAAs, "toy-store.ipv6-framework.slave.mesos.", []string{"2001:db8::1"}},
 	} {
 		// convert want into a map[string]struct{} (string set) for simpler comparison
 		// via reflect.DeepEqual
