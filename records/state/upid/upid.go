@@ -33,6 +33,7 @@ type UPID struct {
 
 // Parse parses the UPID from the input string.
 func Parse(input string) (*UPID, error) {
+	var err error
 	upid := new(UPID)
 
 	splits := strings.Split(input, "@")
@@ -42,9 +43,9 @@ func Parse(input string) (*UPID, error) {
 	upid.ID = splits[0]
 
 	// Using network "tcp" allows us to resolve ipv4 and ipv6
-	if _, err := net.ResolveTCPAddr("tcp", splits[1]); err != nil {
+	if _, err = net.ResolveTCPAddr("tcp", splits[1]); err != nil {
 		return nil, err
 	}
-	upid.Host, upid.Port, _ = net.SplitHostPort(splits[1])
-	return upid, nil
+	upid.Host, upid.Port, err = net.SplitHostPort(splits[1])
+	return upid, err
 }

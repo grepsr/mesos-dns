@@ -2,6 +2,7 @@ package records
 
 import (
 	"encoding/json"
+	"fmt"
 	"io/ioutil"
 	"math/rand"
 	"net"
@@ -52,13 +53,14 @@ func TestParseState_SOAMname(t *testing.T) {
 	}
 }
 
+type expectedRR struct {
+	name string
+	host string
+	kind rrsKind
+}
+
 func TestMasterRecord(t *testing.T) {
 	// masterRecord(domain string, masters []string, leader string)
-	type expectedRR struct {
-		name string
-		host string
-		kind rrsKind
-	}
 	tt := []struct {
 		domain  string
 		masters []string
@@ -176,39 +178,52 @@ func TestMasterRecord(t *testing.T) {
 			if len(rg.As) > 0 {
 				t.Fatalf("test case %d: unexpected As: %v", i+1, rg.As)
 			}
+			if len(rg.AAAAs) > 0 {
+				t.Fatalf("test case %d: unexpected AAAAs: %v", i+1, rg.AAAAs)
+			}
 			if len(rg.SRVs) > 0 {
 				t.Fatalf("test case %d: unexpected SRVs: %v", i+1, rg.SRVs)
 			}
 		}
-		expectedA := make(rrs)
-		expectedAAAA := make(rrs)
-		expectedSRV := make(rrs)
-		for _, e := range tc.expect {
-			found := rg.exists(e.name, e.host, e.kind)
-			if !found {
-				t.Fatalf("test case %d: missing expected record: name=%q host=%q kind=%s, As=%v, AAAAs=%v", i+1, e.name, e.host, e.kind, rg.As, rg.AAAAs)
-			}
-			switch e.kind {
-			case A:
-				expectedA.add(e.name, e.host)
-			case AAAA:
-				expectedAAAA.add(e.name, e.host)
-			case SRV:
-				expectedSRV.add(e.name, e.host)
-			default:
-				t.Fatalf("unexpected kind %q", e.kind)
-			}
+		eA, eAAAA, eSRV, err := expectRecords(rg, tc.expect)
+		if err != nil {
+			t.Fatalf("test case %d: %s, As=%v, AAAAs=%v, SRVs=%v", i+1, err, rg.As, rg.AAAAs, rg.SRVs)
 		}
-		if !reflect.DeepEqual(rg.As, expectedA) {
-			t.Fatalf("test case %d: expected As of %v instead of %v", i+1, expectedA, rg.As)
+		if !reflect.DeepEqual(rg.As, eA) {
+			t.Fatalf("test case %d: expected As of %v instead of %v", i+1, eA, rg.As)
 		}
-		if !reflect.DeepEqual(rg.AAAAs, expectedAAAA) {
-			t.Fatalf("test case %d: expected AAAAs of %v instead of %v", i+1, expectedAAAA, rg.AAAAs)
+		if !reflect.DeepEqual(rg.AAAAs, eAAAA) {
+			t.Fatalf("test case %d: expected AAAAs of %v instead of %v", i+1, eAAAA, rg.AAAAs)
 		}
-		if !reflect.DeepEqual(rg.SRVs, expectedSRV) {
-			t.Fatalf("test case %d: expected SRVs of %v instead of %v", i+1, expectedSRV, rg.SRVs)
+		if !reflect.DeepEqual(rg.SRVs, eSRV) {
+			t.Fatalf("test case %d: expected SRVs of %v instead of %v", i+1, eSRV, rg.SRVs)
 		}
 	}
+}
+
+func expectRecords(rg *RecordGenerator, expect []expectedRR) (eA, eAAAA, eSRV rrs, err error) {
+	eA = make(rrs)
+	eAAAA = make(rrs)
+	eSRV = make(rrs)
+	for _, e := range expect {
+		found := rg.exists(e.name, e.host, e.kind)
+		if !found {
+			err = fmt.Errorf("missing expected record: name=%q host=%q kind=%s", e.name, e.host, e.kind)
+			return
+		}
+		switch e.kind {
+		case A:
+			eA.add(e.name, e.host)
+		case AAAA:
+			eAAAA.add(e.name, e.host)
+		case SRV:
+			eSRV.add(e.name, e.host)
+		default:
+			err = fmt.Errorf("unexpected kind: %q", e.kind)
+			return
+		}
+	}
+	return
 }
 
 func testRecordGenerator(t *testing.T, spec labels.Func, ipSources []string) RecordGenerator {
