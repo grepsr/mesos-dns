@@ -249,10 +249,11 @@ func testRecordGenerator(t *testing.T, spec labels.Func, ipSources []string) Rec
 
 // ensure we are parsing what we think we are
 func TestInsertState(t *testing.T) {
-	rg := testRecordGenerator(t, labels.RFC952, []string{"docker", "mesos", "host"})
+	rg := testRecordGenerator(t, labels.RFC952, []string{"netinfo", "docker", "mesos", "host"})
 	rgDocker := testRecordGenerator(t, labels.RFC952, []string{"docker", "host"})
 	rgMesos := testRecordGenerator(t, labels.RFC952, []string{"mesos", "host"})
 	rgSlave := testRecordGenerator(t, labels.RFC952, []string{"host"})
+	rgNetinfo := testRecordGenerator(t, labels.RFC952, []string{"netinfo"})
 
 	for i, tt := range []struct {
 		rrs  rrs
@@ -273,7 +274,7 @@ func TestInsertState(t *testing.T) {
 		{rg.As, "some-box.chronoswithaspaceandmixe.mesos.", []string{"1.2.3.11"}}, // ensure we translate the framework name as well
 		{rg.As, "marathon.mesos.", []string{"1.2.3.11"}},
 
-		{rg.AAAAs, "toy-store.ipv6-framework.mesos.", []string{"2001:db8:85a3::8a2e:370:7334"}},
+		{rg.AAAAs, "toy-store.ipv6-framework.mesos.", []string{"fd01:b::1:8000:2"}},
 		{rg.AAAAs, "toy-store.ipv6-framework.slave.mesos.", []string{"2001:db8::1"}},
 		{rg.AAAAs, "ipv6-framework.mesos.", []string{"2001:db8::1"}},
 		{rg.AAAAs, "slave.mesos.", []string{"2001:db8::1"}},
@@ -327,11 +328,16 @@ func TestInsertState(t *testing.T) {
 		{rgMesos.AAAAs, "toy-store.ipv6-framework.mesos.", []string{"2001:db8::1"}},
 		{rgMesos.AAAAs, "toy-store.ipv6-framework.slave.mesos.", []string{"2001:db8::1"}},
 
+		{rgNetinfo.As, "toy-store.ipv6-framework.mesos.", []string{"12.0.1.2"}},
+
+		{rgNetinfo.AAAAs, "toy-store.ipv6-framework.mesos.", []string{"fd01:b::1:8000:2"}},
+		{rgNetinfo.AAAAs, "toy-store.ipv6-framework.slave.mesos.", []string{"2001:db8::1"}},
+
 		{rgDocker.As, "liquor-store.marathon.mesos.", []string{"10.3.0.1", "10.3.0.2"}},
 		{rgDocker.As, "liquor-store.marathon.slave.mesos.", []string{"1.2.3.11", "1.2.3.12"}},
 		{rgDocker.As, "nginx.marathon.mesos.", []string{"1.2.3.11"}},
 		{rgDocker.As, "car-store.marathon.slave.mesos.", []string{"1.2.3.11"}},
-		{rgDocker.AAAAs, "toy-store.ipv6-framework.mesos.", []string{"2001:db8:85a3::8a2e:370:7334"}},
+		{rgDocker.AAAAs, "toy-store.ipv6-framework.mesos.", []string{"2001:db8::1"}},
 		{rgDocker.AAAAs, "toy-store.ipv6-framework.slave.mesos.", []string{"2001:db8::1"}},
 	} {
 		// convert want into a map[string]struct{} (string set) for simpler comparison

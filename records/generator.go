@@ -398,11 +398,11 @@ func (rg *RecordGenerator) taskRecords(sj state.State, domain string, spec label
 }
 
 type context struct {
-	taskName,
-	taskID,
-	slaveID,
-	taskIP,
-	slaveIP string
+	taskName string
+	taskID   string
+	slaveID  string
+	taskIPs  []net.IP
+	slaveIP  string
 }
 
 func (rg *RecordGenerator) taskRecord(task state.Task, f state.Framework, domain string, spec labels.Func, ipSources []string, enumFW *EnumerableFramework) {
@@ -416,7 +416,7 @@ func (rg *RecordGenerator) taskRecord(task state.Task, f state.Framework, domain
 		spec(task.Name),
 		hashString(task.ID),
 		slaveIDTail(task.SlaveID),
-		task.IP(ipSources...),
+		task.IPs(ipSources...),
 		task.SlaveIP,
 	}
 
@@ -443,9 +443,15 @@ func (rg *RecordGenerator) taskContextRecord(ctx context, task state.Task, f sta
 	canonical := ctx.taskName + "-" + ctx.taskID + "-" + ctx.slaveID + "." + fname
 	arec := ctx.taskName + "." + fname
 
-	taskIPKind := rrsKindForIPStr(ctx.taskIP)
-	rg.insertTaskRR(arec+tail, ctx.taskIP, taskIPKind, enumTask)
-	rg.insertTaskRR(canonical+tail, ctx.taskIP, taskIPKind, enumTask)
+	ipv4, ipv6 := splitIPsToTypes(ctx.taskIPs)
+	if ipv4 != nil {
+		rg.insertTaskRR(arec+tail, ipv4.String(), A, enumTask)
+		rg.insertTaskRR(canonical+tail, ipv4.String(), A, enumTask)
+	}
+	if ipv6 != nil {
+		rg.insertTaskRR(arec+tail, ipv6.String(), AAAA, enumTask)
+		rg.insertTaskRR(canonical+tail, ipv6.String(), AAAA, enumTask)
+	}
 
 	slaveIPKind := rrsKindForIPStr(ctx.slaveIP)
 	rg.insertTaskRR(arec+".slave"+tail, ctx.slaveIP, slaveIPKind, enumTask)
@@ -586,6 +592,25 @@ func hostToIPs(hostname string) (ipv4, ipv6 net.IP, ok bool) {
 		}
 	}
 	return ipv4, ipv6, ok
+}
+
+func splitIPsToTypes(ips []net.IP) (ipv4, ipv6 net.IP) {
+	for _, ip := range ips {
+		if ipv4 != nil && ipv6 != nil {
+			break
+		}
+
+		if t4 := ip.To4(); t4 != nil {
+			if ipv4 == nil {
+				ipv4 = ip
+			}
+		} else if t6 := ip.To16(); t6 != nil {
+			if ipv6 == nil {
+				ipv6 = ip
+			}
+		}
+	}
+	return ipv4, ipv6
 }
 
 // return the slave number from a Mesos slave id

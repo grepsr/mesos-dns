@@ -73,17 +73,27 @@
                     "statuses": [
                         {
                             "state": "TASK_RUNNING",
-                            "timestamp": 1413572390.09275,
-                            "labels": [
-                                {
-                                    "key": "foo",
-                                    "value": "bar"
+                            "timestamp": 1507139816.34576,
+                            "container_status": {
+                                "container_id": {
+                                    "value": "da87d8aa-98f1-4fc3-a260-f92c116fc926"
                                 },
-                                {
-                                    "key": "Docker.NetworkSettings.IPAddress",
-                                    "value": "2001:db8:85a3::8a2e:370:7334"
-                                }
-                            ]
+                                "network_infos": [
+                                    {
+                                        "ip_addresses": [
+                                            {
+                                                "protocol": "IPv4",
+                                                "ip_address": "12.0.1.2"
+                                            },
+                                            {
+                                                "protocol": "IPv6",
+                                                "ip_address": "fd01:b::1:8000:2"
+                                            }
+                                        ],
+                                        "name": "dcos6"
+                                    }
+                                ]
+                            }
                         }
                     ]
                 }

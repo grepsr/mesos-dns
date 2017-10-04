@@ -89,10 +89,10 @@ func TestTask_IPs(t *testing.T) {
 		{ // source order
 			Task: task(
 				slaveIP("2.3.4.5"),
-				statuses(status(state("TASK_RUNNING"), netinfos(netinfo("1.2.3.4")))),
+				statuses(status(state("TASK_RUNNING"), netinfos(netinfo("1.2.3.4", "fd01:b::1:8000:2")))),
 			),
 			srcs: []string{"host", "netinfo"},
-			want: ips("2.3.4.5", "1.2.3.4"),
+			want: ips("2.3.4.5", "1.2.3.4", "fd01:b::1:8000:2"),
 		},
 		{ // statuses state
 			Task: task(
