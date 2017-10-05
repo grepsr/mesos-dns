@@ -74,7 +74,7 @@ func A(hdr dns.RR_Header, ip net.IP) *dns.A {
 func AAAA(hdr dns.RR_Header, ip net.IP) *dns.AAAA {
 	return &dns.AAAA{
 		Hdr:  hdr,
-		AAAA: ip.To4(),
+		AAAA: ip.To16(),
 	}
 }
 

@@ -241,6 +241,26 @@ func (res *Resolver) formatA(dom string, target string) (*dns.A, error) {
 	}, nil
 }
 
+// returns the AAAA resource record for target
+// assumes target is a well formed IPv6 address
+func (res *Resolver) formatAAAA(dom string, target string) (*dns.AAAA, error) {
+	ttl := uint32(res.config.TTL)
+
+	aaaa := net.ParseIP(target)
+	if aaaa == nil {
+		return nil, errors.New("invalid target")
+	}
+
+	return &dns.AAAA{
+		Hdr: dns.RR_Header{
+			Name:   dom,
+			Rrtype: dns.TypeAAAA,
+			Class:  dns.ClassINET,
+			Ttl:    ttl},
+		AAAA: aaaa.To16(),
+	}, nil
+}
+
 // formatSOA returns the SOA resource record for the mesos domain
 func (res *Resolver) formatSOA(dom string) *dns.SOA {
 	ttl := uint32(res.config.TTL)
@@ -315,7 +335,7 @@ func rcode(err error) int {
 
 // HandleMesos is a resolver request handler that responds to a resource
 // question with resource answer(s)
-// it can handle {A, SRV, ANY}
+// it can handle {A, AAAA, SRV, ANY}
 func (res *Resolver) HandleMesos(w dns.ResponseWriter, r *dns.Msg) {
 	logging.CurLog.MesosRequests.Inc()
 
@@ -333,6 +353,8 @@ func (res *Resolver) HandleMesos(w dns.ResponseWriter, r *dns.Msg) {
 		errs.Add(res.handleSRV(rs, name, m, r))
 	case dns.TypeA:
 		errs.Add(res.handleA(rs, name, m))
+	case dns.TypeAAAA:
+		errs.Add(res.handleAAAA(rs, name, m))
 	case dns.TypeSOA:
 		errs.Add(res.handleSOA(m, r))
 	case dns.TypeNS:
@@ -341,6 +363,7 @@ func (res *Resolver) HandleMesos(w dns.ResponseWriter, r *dns.Msg) {
 		errs.Add(
 			res.handleSRV(rs, name, m, r),
 			res.handleA(rs, name, m),
+			res.handleAAAA(rs, name, m),
 			res.handleSOA(m, r),
 			res.handleNS(m, r),
 		)
@@ -372,12 +395,15 @@ func (res *Resolver) handleSRV(rs *records.RecordGenerator, name string, m, r *d
 		}
 
 		m.Answer = append(m.Answer, srvRR)
-		host := strings.Split(srv, ":")[0]
+		host, _, err := net.SplitHostPort(srv)
+		if err != nil {
+			logging.Error.Println(err)
+		}
 		if _, found := added[host]; found {
 			// avoid dups
 			continue
 		}
-		if len(rs.As[host]) == 0 {
+		if len(rs.As[host]) == 0 && len(rs.AAAAs[host]) == 0 {
 			continue
 		}
 
@@ -389,6 +415,14 @@ func (res *Resolver) handleSRV(rs *records.RecordGenerator, name string, m, r *d
 			}
 			m.Extra = append(m.Extra, aRR)
 			added[host] = struct{}{}
+		} else if aaaa, ok := rs.AAAAs.First(host); ok {
+			aaaaRR, err := res.formatAAAA(host, aaaa)
+			if err != nil {
+				errs.Add(err)
+				continue
+			}
+			m.Extra = append(m.Extra, aaaaRR)
+			added[host] = struct{}{}
 		}
 	}
 	return errs
@@ -398,6 +432,19 @@ func (res *Resolver) handleA(rs *records.RecordGenerator, name string, m *dns.Ms
 	var errs multiError
 	for a := range rs.As[name] {
 		rr, err := res.formatA(name, a)
+		if err != nil {
+			errs.Add(err)
+			continue
+		}
+		m.Answer = append(m.Answer, rr)
+	}
+	return errs
+}
+
+func (res *Resolver) handleAAAA(rs *records.RecordGenerator, name string, m *dns.Msg) error {
+	var errs multiError
+	for aaaa := range rs.AAAAs[name] {
+		rr, err := res.formatAAAA(name, aaaa)
 		if err != nil {
 			errs.Add(err)
 			continue
@@ -427,26 +474,16 @@ func (res *Resolver) handleEmpty(rs *records.RecordGenerator, name string, m, r 
 
 	m.Rcode = dns.RcodeNameError
 
-	// Because we don't implement AAAA records, AAAA queries will always
-	// go via this path
-	// Unfortunately, we don't implement AAAA queries in Mesos-DNS,
-	// and although the 'Not Implemented' error code seems more suitable,
-	// RFCs do not recommend it: https://tools.ietf.org/html/rfc4074
-	// Therefore we always return success, which is synonymous with NODATA
-	// to get a positive cache on no records AAAA
-	// Further information:
-	// PR: https://github.com/mesosphere/mesos-dns/pull/366
-	// Issue: https://github.com/mesosphere/mesos-dns/issues/363
-
 	// The second component is just a matter of returning NODATA if we have
 	// SRV or A records for the given name, but no neccessarily the given query
 
-	if (qType == dns.TypeAAAA) || (len(rs.SRVs[name])+len(rs.As[name]) > 0) {
+	if len(rs.SRVs[name])+len(rs.As[name])+len(rs.AAAAs[name]) > 0 {
 		m.Rcode = dns.RcodeSuccess
 	}
 
 	logging.CurLog.MesosNXDomain.Inc()
 	logging.VeryVerbose.Println("total A rrs:\t" + strconv.Itoa(len(rs.As)))
+	logging.VeryVerbose.Println("total AAAA rrs:\t" + strconv.Itoa(len(rs.AAAAs)))
 	logging.VeryVerbose.Println("failed looking for " + r.Question[0].String())
 
 	m.Ns = append(m.Ns, res.formatSOA(r.Question[0].Name))
@@ -606,8 +643,9 @@ func (res *Resolver) RestAXFR(req *restful.Request, resp *restful.Response) {
 	records := res.records()
 
 	AXFRRecords := models.AXFRRecords{
-		SRVs: records.SRVs.ToAXFRResourceRecordSet(),
-		As:   records.As.ToAXFRResourceRecordSet(),
+		SRVs:  records.SRVs.ToAXFRResourceRecordSet(),
+		As:    records.As.ToAXFRResourceRecordSet(),
+		AAAAs: records.AAAAs.ToAXFRResourceRecordSet(),
 	}
 	AXFR := models.AXFR{
 		Records:        AXFRRecords,
@@ -652,8 +690,12 @@ func (res *Resolver) RestHost(req *restful.Request, resp *restful.Response) {
 	}
 
 	aRRs := rs.As[dom]
-	records := make([]record, 0, len(aRRs))
+	aaaaRRs := rs.AAAAs[dom]
+	records := make([]record, 0, len(aRRs)+len(aaaaRRs))
 	for ip := range aRRs {
+		records = append(records, record{dom, ip})
+	}
+	for ip := range aaaaRRs {
 		records = append(records, record{dom, ip})
 	}
 
@@ -717,6 +759,8 @@ func (res *Resolver) RestService(req *restful.Request, resp *restful.Response) {
 		}
 		var ip string
 		if r, ok := rs.As.First(host); ok {
+			ip = r
+		} else if r, ok := rs.AAAAs.First(host); ok {
 			ip = r
 		}
 		records = append(records, record{service, host, ip, port})
