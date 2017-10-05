@@ -386,7 +386,8 @@ func (res *Resolver) HandleMesos(w dns.ResponseWriter, r *dns.Msg) {
 
 func (res *Resolver) handleSRV(rs *records.RecordGenerator, name string, m, r *dns.Msg) error {
 	var errs multiError
-	added := map[string]struct{}{} // track the A RR's we've already added, avoid dups
+	aAdded := map[string]struct{}{}    // track the A RR's we've already added, avoid dups
+	aaaaAdded := map[string]struct{}{} // track the AAAA RR's we've already added, avoid dups
 	for srv := range rs.SRVs[name] {
 		srvRR, err := res.formatSRV(r.Question[0].Name, srv)
 		if err != nil {
@@ -399,30 +400,28 @@ func (res *Resolver) handleSRV(rs *records.RecordGenerator, name string, m, r *d
 		if err != nil {
 			logging.Error.Println(err)
 		}
-		if _, found := added[host]; found {
-			// avoid dups
-			continue
-		}
 		if len(rs.As[host]) == 0 && len(rs.AAAAs[host]) == 0 {
 			continue
 		}
-
-		if a, ok := rs.As.First(host); ok {
-			aRR, err := res.formatA(host, a)
-			if err != nil {
-				errs.Add(err)
-				continue
+		if _, aFound := aAdded[host]; !aFound {
+			if a, ok := rs.As.First(host); ok {
+				if aRR, err := res.formatA(host, a); err == nil {
+					m.Extra = append(m.Extra, aRR)
+					aAdded[host] = struct{}{}
+				} else {
+					errs.Add(err)
+				}
 			}
-			m.Extra = append(m.Extra, aRR)
-			added[host] = struct{}{}
-		} else if aaaa, ok := rs.AAAAs.First(host); ok {
-			aaaaRR, err := res.formatAAAA(host, aaaa)
-			if err != nil {
-				errs.Add(err)
-				continue
+		}
+		if _, aaaaFound := aaaaAdded[host]; !aaaaFound {
+			if aaaa, ok := rs.AAAAs.First(host); ok {
+				if aaaaRR, err := res.formatAAAA(host, aaaa); err == nil {
+					m.Extra = append(m.Extra, aaaaRR)
+					aaaaAdded[host] = struct{}{}
+				} else {
+					errs.Add(err)
+				}
 			}
-			m.Extra = append(m.Extra, aaaaRR)
-			added[host] = struct{}{}
 		}
 	}
 	return errs
@@ -757,13 +756,12 @@ func (res *Resolver) RestService(req *restful.Request, resp *restful.Response) {
 			logging.Error.Println(err)
 			continue
 		}
-		var ip string
-		if r, ok := rs.As.First(host); ok {
-			ip = r
-		} else if r, ok := rs.AAAAs.First(host); ok {
-			ip = r
+		if aR, aOk := rs.As.First(host); aOk {
+			records = append(records, record{service, host, aR, port})
 		}
-		records = append(records, record{service, host, ip, port})
+		if aaaaR, aaaaOk := rs.AAAAs.First(host); aaaaOk {
+			records = append(records, record{service, host, aaaaR, port})
+		}
 	}
 
 	if len(records) == 0 {

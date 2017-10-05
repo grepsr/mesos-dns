@@ -97,7 +97,7 @@ type RecordGenerator struct {
 	As          rrs
 	AAAAs       rrs
 	SRVs        rrs
-	SlaveIPs    map[string]string
+	SlaveIPs    map[string][]string
 	EnumData    EnumerationData
 	stateLoader func(masters []string) (state.State, error)
 }
@@ -203,8 +203,7 @@ func hashString(s string) string {
 
 // InsertState transforms a StateJSON into RecordGenerator RRs
 func (rg *RecordGenerator) InsertState(sj state.State, domain, ns, listener string, masters, ipSources []string, spec labels.Func) error {
-
-	rg.SlaveIPs = map[string]string{}
+	rg.SlaveIPs = map[string][]string{}
 	rg.SRVs = rrs{}
 	rg.As = rrs{}
 	rg.AAAAs = rrs{}
@@ -217,21 +216,17 @@ func (rg *RecordGenerator) InsertState(sj state.State, domain, ns, listener stri
 	return nil
 }
 
-// frameworkRecords injects A and SRV records into the generator store:
+// frameworkRecords injects A, AAAA, and SRV records into the generator store:
 //     frameworkname.domain.                 // resolves to IPs of each framework
 //     _framework._tcp.frameworkname.domain. // resolves to the driver port and IP of each framework
 func (rg *RecordGenerator) frameworkRecords(sj state.State, domain string, spec labels.Func) {
 	for _, f := range sj.Frameworks {
-		fname := labels.DomainFrag(f.Name, labels.Sep, spec)
 		host, port := f.HostPort()
-
-		if ipv4, ipv6, ok := hostToIPs(host); ok {
+		if ips := hostToIPs(host); len(ips) > 0 {
+			fname := labels.DomainFrag(f.Name, labels.Sep, spec)
 			a := fname + "." + domain + "."
-			if ipv4 != nil {
-				rg.insertRR(a, ipv4.String(), A)
-			}
-			if ipv6 != nil {
-				rg.insertRR(a, ipv6.String(), AAAA)
+			for _, ip := range ips {
+				rg.insertRR(a, ip.String(), rrsKindForIP(ip))
 			}
 			if port != "" {
 				srvAddress := net.JoinHostPort(a, port)
@@ -247,26 +242,22 @@ func (rg *RecordGenerator) frameworkRecords(sj state.State, domain string, spec 
 func (rg *RecordGenerator) slaveRecords(sj state.State, domain string, spec labels.Func) {
 	a := "slave." + domain + "."
 	for _, slave := range sj.Slaves {
-		slaveIP := ""
-		if ipv4, ipv6, ok := hostToIPs(slave.PID.Host); ok {
-			if ipv6 != nil {
-				rg.insertRR(a, ipv6.String(), AAAA)
-				slaveIP = ipv6.String()
-			}
-			if ipv4 != nil {
-				rg.insertRR(a, ipv4.String(), A)
-				// Prefer ipv4 for slaveIP
-				slaveIP = ipv4.String()
+		slaveIPs := []string{}
+		if ips := hostToIPs(slave.PID.Host); len(ips) > 0 {
+			for _, ip := range ips {
+				rg.insertRR(a, ip.String(), rrsKindForIP(ip))
+				slaveIPs = append(slaveIPs, ip.String())
 			}
 			srv := net.JoinHostPort(a, slave.PID.Port)
 			rg.insertRR("_slave._tcp."+domain+".", srv, SRV)
 		} else {
-			logging.VeryVerbose.Printf("string '%q' for slave with id %q is not a valid IP address", slave.PID.Host, slave.ID)
+			logging.VeryVerbose.Printf("string %q for slave with id %q is not a valid IP address", slave.PID.Host, slave.ID)
 		}
-		if slaveIP == "" {
-			slaveIP = labels.DomainFrag(slave.PID.Host, labels.Sep, spec)
+		if len(slaveIPs) == 0 {
+			address := labels.DomainFrag(slave.PID.Host, labels.Sep, spec)
+			slaveIPs = append(slaveIPs, address)
 		}
-		rg.SlaveIPs[slave.ID] = slaveIP
+		rg.SlaveIPs[slave.ID] = slaveIPs
 	}
 }
 
@@ -387,7 +378,7 @@ func (rg *RecordGenerator) taskRecords(sj state.State, domain string, spec label
 
 		for _, task := range f.Tasks {
 			var ok bool
-			task.SlaveIP, ok = rg.SlaveIPs[task.SlaveID]
+			task.SlaveIPs, ok = rg.SlaveIPs[task.SlaveID]
 
 			// only do running and discoverable tasks
 			if ok && (task.State == "TASK_RUNNING") {
@@ -402,7 +393,7 @@ type context struct {
 	taskID   string
 	slaveID  string
 	taskIPs  []net.IP
-	slaveIP  string
+	slaveIPs []string
 }
 
 func (rg *RecordGenerator) taskRecord(task state.Task, f state.Framework, domain string, spec labels.Func, ipSources []string, enumFW *EnumerableFramework) {
@@ -417,7 +408,7 @@ func (rg *RecordGenerator) taskRecord(task state.Task, f state.Framework, domain
 		hashString(task.ID),
 		slaveIDTail(task.SlaveID),
 		task.IPs(ipSources...),
-		task.SlaveIP,
+		task.SlaveIPs,
 	}
 
 	// use DiscoveryInfo name if defined instead of task name
@@ -443,19 +434,25 @@ func (rg *RecordGenerator) taskContextRecord(ctx context, task state.Task, f sta
 	canonical := ctx.taskName + "-" + ctx.taskID + "-" + ctx.slaveID + "." + fname
 	arec := ctx.taskName + "." + fname
 
-	ipv4, ipv6 := splitIPsToTypes(ctx.taskIPs)
-	if ipv4 != nil {
-		rg.insertTaskRR(arec+tail, ipv4.String(), A, enumTask)
-		rg.insertTaskRR(canonical+tail, ipv4.String(), A, enumTask)
-	}
-	if ipv6 != nil {
-		rg.insertTaskRR(arec+tail, ipv6.String(), AAAA, enumTask)
-		rg.insertTaskRR(canonical+tail, ipv6.String(), AAAA, enumTask)
+	// Only use the first ipv4 and first ipv6 found in sources
+	tIPs := ipsTo4And6(ctx.taskIPs)
+	for _, tIP := range tIPs {
+		rg.insertTaskRR(arec+tail, tIP.String(), rrsKindForIP(tIP), enumTask)
+		rg.insertTaskRR(canonical+tail, tIP.String(), rrsKindForIP(tIP), enumTask)
 	}
 
-	slaveIPKind := rrsKindForIPStr(ctx.slaveIP)
-	rg.insertTaskRR(arec+".slave"+tail, ctx.slaveIP, slaveIPKind, enumTask)
-	rg.insertTaskRR(canonical+".slave"+tail, ctx.slaveIP, slaveIPKind, enumTask)
+	// slaveIPs already only has at most one ipv4 and one ipv6
+	for _, sIPStr := range ctx.slaveIPs {
+		if sIP := net.ParseIP(sIPStr); sIP != nil {
+			rg.insertTaskRR(arec+".slave"+tail, sIP.String(), rrsKindForIP(sIP), enumTask)
+			rg.insertTaskRR(canonical+".slave"+tail, sIP.String(), rrsKindForIP(sIP), enumTask)
+		} else {
+			// ack: slave IP may not be an actual IP if labels.DomainFrag was used.
+			// Does labels.DomainFrag produce a valid A record value?
+			rg.insertTaskRR(arec+".slave"+tail, sIPStr, A, enumTask)
+			rg.insertTaskRR(canonical+".slave"+tail, sIPStr, A, enumTask)
+		}
+	}
 
 	// recordName generates records for ctx.taskName, given some generation chain
 	recordName := func(gen chain) { gen("_" + ctx.taskName) }
@@ -496,7 +493,7 @@ func (rg *RecordGenerator) taskContextRecord(ctx context, task state.Task, f sta
 	}
 }
 
-// A records for each local interface
+// A and AAAA records for each local interface
 // If this causes problems you should explicitly set the
 // listener address in config.json
 func (rg *RecordGenerator) setFromLocal(host string, ns string) {
@@ -559,58 +556,56 @@ func rrsKindForIP(ip net.IP) rrsKind {
 	} else if ip.To16() != nil {
 		return AAAA
 	}
-	return A
+	panic("unknown ip type: " + ip.String())
 }
 
 func rrsKindForIPStr(ip string) rrsKind {
 	if parsedIP := net.ParseIP(ip); parsedIP != nil {
 		return rrsKindForIP(parsedIP)
 	}
-	return A
+	panic("unable to parse ip: " + ip)
 }
 
-// hostToIPs attempts to parse hostname into an ip. If that doesn't work it will perform a
-// lookup and try to find one ipv4 and one ipv6 in the results.
-func hostToIPs(hostname string) (ipv4, ipv6 net.IP, ok bool) {
-	ok = false
-	if parsedIP := net.ParseIP(hostname); parsedIP != nil {
-		if ipv4 = parsedIP.To4(); ipv4 != nil {
-			ok = true
-		} else if ipv6 = parsedIP.To16(); ipv6 != nil {
-			ok = true
-		}
-	} else {
-		if t4, err := net.ResolveIPAddr("ip4", hostname); err == nil {
-			ipv4 = t4.IP
-			ok = true
-		} else {
-			logging.Error.Printf("cannot translate hostname %q into an ip4 address", hostname)
-		}
-		if t6, err := net.ResolveIPAddr("ip6", hostname); err == nil {
-			ipv6 = t6.IP
-			ok = true
-		}
-	}
-	return ipv4, ipv6, ok
-}
-
-func splitIPsToTypes(ips []net.IP) (ipv4, ipv6 net.IP) {
-	for _, ip := range ips {
+// ipsTo4And6 returns a list with at most 1 ipv4 and 1 ipv6
+// from a list of IPs
+func ipsTo4And6(allIPs []net.IP) (ips []net.IP) {
+	var ipv4, ipv6 net.IP
+	for _, ip := range allIPs {
 		if ipv4 != nil && ipv6 != nil {
 			break
-		}
-
-		if t4 := ip.To4(); t4 != nil {
+		} else if t4 := ip.To4(); t4 != nil {
 			if ipv4 == nil {
-				ipv4 = ip
+				ipv4 = t4
 			}
 		} else if t6 := ip.To16(); t6 != nil {
 			if ipv6 == nil {
-				ipv6 = ip
+				ipv6 = t6
 			}
 		}
 	}
-	return ipv4, ipv6
+	ips = []net.IP{}
+	if ipv4 != nil {
+		ips = append(ips, ipv4)
+	}
+	if ipv6 != nil {
+		ips = append(ips, ipv6)
+	}
+	return
+}
+
+// hostToIPs attempts to parse a hostname into an ip.
+// If that doesn't work it will perform a lookup and try to
+// find one ipv4 and one ipv6 in the results.
+func hostToIPs(hostname string) (ips []net.IP) {
+	if ip := net.ParseIP(hostname); ip != nil {
+		ips = []net.IP{ip}
+	} else if allIPs, err := net.LookupIP(hostname); err == nil {
+		ips = ipsTo4And6(allIPs)
+	}
+	if len(ips) == 0 {
+		logging.VeryVerbose.Printf("cannot translate hostname %q into an ipv4 or ipv6 address", hostname)
+	}
+	return
 }
 
 // return the slave number from a Mesos slave id
