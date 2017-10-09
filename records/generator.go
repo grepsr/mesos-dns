@@ -449,6 +449,7 @@ func (rg *RecordGenerator) taskContextRecord(ctx context, task state.Task, f sta
 		} else {
 			// ack: slave IP may not be an actual IP if labels.DomainFrag was used.
 			// Does labels.DomainFrag produce a valid A record value?
+			// Issue to track: https://github.com/mesosphere/mesos-dns/issues/509
 			rg.insertTaskRR(arec+".slave"+tail, sIPStr, A, enumTask)
 			rg.insertTaskRR(canonical+".slave"+tail, sIPStr, A, enumTask)
 		}
