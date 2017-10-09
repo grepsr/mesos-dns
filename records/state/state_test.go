@@ -167,7 +167,7 @@ func statuses(st ...Status) taskOpt {
 }
 
 func slaveIPs(ips ...string) taskOpt {
-	return func(t *Task) { t.SlaveIPs = []string{ips} }
+	return func(t *Task) { t.SlaveIPs = ips }
 }
 
 func status(opts ...statusOpt) Status {
