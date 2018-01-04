@@ -698,7 +698,7 @@ func (res *Resolver) RestRegistration(req *restful.Request, resp *restful.Respon
 		records = append(records, record{ip, port})
 	}
 
-	if len(hosts) == 0 {
+	if len(records) == 0 {
 		records = append(records, record{})
 	}
 
