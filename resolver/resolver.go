@@ -674,7 +674,7 @@ func (res *Resolver) RestRegistration(req *restful.Request, resp *restful.Respon
 
 	type record struct {
 		IPAddress string `json:"ip_address"`
-		Port      string `json:"port"`
+		Port      int   `json:"port"`
 	}
 
 	// type tags struct {
@@ -691,11 +691,16 @@ func (res *Resolver) RestRegistration(req *restful.Request, resp *restful.Respon
 			logging.Error.Println(err)
 			continue
 		}
+		p, err := strconv.Atoi(port)
+		if err != nil {
+			logging.Error.Println(err)
+			continue
+		}
 		var ip string
 		if r, ok := rs.As.First(host); ok {
 			ip = r
 		}
-		records = append(records, record{ip, port})
+		records = append(records, record{ip, p})
 	}
 
 	if len(records) == 0 {
