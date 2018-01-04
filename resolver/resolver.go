@@ -7,14 +7,13 @@ import (
 	"math/rand"
 	"net"
 	"net/http"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	restful "github.com/emicklei/go-restful"
+	"github.com/emicklei/go-restful"
 	_ "github.com/mesos/mesos-go/detector/zoo" // Registers the ZK detector
 	"github.com/mesosphere/mesos-dns/exchanger"
 	"github.com/mesosphere/mesos-dns/logging"
@@ -29,13 +28,11 @@ type Resolver struct {
 	masters          []string
 	version          string
 	config           records.Config
-	ready            chan struct{}
 	rs               *records.RecordGenerator
 	rsLock           sync.RWMutex
 	rng              *rand.Rand
+	fwd              exchanger.Forwarder
 	generatorOptions []records.Option
-	zoneFwds         map[string]exchanger.Forwarder // map of zone -> forwarder
-	defaultFwd       exchanger.Forwarder
 }
 
 // New returns a Resolver with the given version and configuration.
@@ -47,7 +44,6 @@ func New(version string, config records.Config) *Resolver {
 	r := &Resolver{
 		version: version,
 		config:  config,
-		ready:   make(chan struct{}),
 		rs:      recordGenerator,
 		// rand.Sources aren't safe for concurrent use, except the global one.
 		// See: https://github.com/golang/go/issues/3611
@@ -61,17 +57,11 @@ func New(version string, config records.Config) *Resolver {
 		timeout = time.Duration(config.Timeout) * time.Second
 	}
 
-	r.zoneFwds = make(map[string]exchanger.Forwarder)
-	if config.ExternalOn {
-		for zone, resolvers := range config.ZoneResolvers {
-			r.zoneFwds[zone] = exchanger.NewForwarder(resolvers, exchangers(timeout, "udp", "tcp"))
-		}
-		r.defaultFwd = exchanger.NewForwarder(
-			config.Resolvers, exchangers(timeout, "udp", "tcp"))
-	} else {
-		r.defaultFwd = exchanger.NewForwarder(
-			make([]string, 0), exchangers(timeout, "udp", "tcp"))
+	rs := config.Resolvers
+	if !config.ExternalOn {
+		rs = rs[:0]
 	}
+	r.fwd = exchanger.NewForwarder(rs, exchangers(timeout, "udp", "tcp"))
 
 	return r
 }
@@ -98,12 +88,6 @@ func exchangers(timeout time.Duration, protos ...string) map[string]exchanger.Ex
 	return exs
 }
 
-// Ready blocks until the resolver has had a chance to reload at least
-// once.
-func (res *Resolver) Ready() <-chan struct{} {
-	return res.ready
-}
-
 // return the current (read-only) record set. attempts to write to the returned
 // object will likely result in a data race.
 func (res *Resolver) records() *records.RecordGenerator {
@@ -117,15 +101,8 @@ func (res *Resolver) records() *records.RecordGenerator {
 func (res *Resolver) LaunchDNS() <-chan error {
 	// Handers for Mesos requests
 	dns.HandleFunc(res.config.Domain+".", panicRecover(res.HandleMesos))
-	// Handlers for nonMesos requests
-	for zone, fwd := range res.zoneFwds {
-		dns.HandleFunc(
-			zone+".",
-			panicRecover(res.HandleNonMesos(fwd)))
-	}
-	dns.HandleFunc(
-		".",
-		panicRecover(res.HandleNonMesos(res.defaultFwd)))
+	// Handler for nonMesos requests
+	dns.HandleFunc(".", panicRecover(res.HandleNonMesos))
 
 	errCh := make(chan error, 2)
 	_, e1 := res.Serve("tcp")
@@ -181,12 +158,6 @@ func (res *Resolver) Reload() {
 		defer res.rsLock.Unlock()
 		atomic.StoreUint32(&res.config.SOASerial, timestamp)
 		res.rs = t
-		select {
-		case <-res.ready:
-			// noop because channel is already closed
-		default:
-			close(res.ready)
-		}
 	} else {
 		logging.Error.Printf("Warning: Error generating records: %v; keeping old DNS state", err)
 	}
@@ -241,26 +212,6 @@ func (res *Resolver) formatA(dom string, target string) (*dns.A, error) {
 	}, nil
 }
 
-// returns the AAAA resource record for target
-// assumes target is a well formed IPv6 address
-func (res *Resolver) formatAAAA(dom string, target string) (*dns.AAAA, error) {
-	ttl := uint32(res.config.TTL)
-
-	aaaa := net.ParseIP(target)
-	if aaaa == nil {
-		return nil, errors.New("invalid target")
-	}
-
-	return &dns.AAAA{
-		Hdr: dns.RR_Header{
-			Name:   dom,
-			Rrtype: dns.TypeAAAA,
-			Class:  dns.ClassINET,
-			Ttl:    ttl},
-		AAAA: aaaa.To16(),
-	}, nil
-}
-
 // formatSOA returns the SOA resource record for the mesos domain
 func (res *Resolver) formatSOA(dom string) *dns.SOA {
 	ttl := uint32(res.config.TTL)
@@ -310,18 +261,15 @@ func shuffleAnswers(rng *rand.Rand, answers []dns.RR) []dns.RR {
 
 // HandleNonMesos handles non-mesos queries by forwarding to configured
 // external DNS servers.
-func (res *Resolver) HandleNonMesos(fwd exchanger.Forwarder) func(
-	dns.ResponseWriter, *dns.Msg) {
-	return func(w dns.ResponseWriter, r *dns.Msg) {
-		logging.CurLog.NonMesosRequests.Inc()
-		m, err := fwd(r, w.RemoteAddr().Network())
-		if err != nil {
-			m = new(dns.Msg).SetRcode(r, rcode(err))
-		} else if len(m.Answer) == 0 {
-			logging.CurLog.NonMesosNXDomain.Inc()
-		}
-		reply(w, m, res.config.SetTruncateBit)
+func (res *Resolver) HandleNonMesos(w dns.ResponseWriter, r *dns.Msg) {
+	logging.CurLog.NonMesosRequests.Inc()
+	m, err := res.fwd(r, w.RemoteAddr().Network())
+	if err != nil {
+		m = new(dns.Msg).SetRcode(r, rcode(err))
+	} else if len(m.Answer) == 0 {
+		logging.CurLog.NonMesosNXDomain.Inc()
 	}
+	reply(w, m)
 }
 
 func rcode(err error) int {
@@ -335,7 +283,7 @@ func rcode(err error) int {
 
 // HandleMesos is a resolver request handler that responds to a resource
 // question with resource answer(s)
-// it can handle {A, AAAA, SRV, ANY}
+// it can handle {A, SRV, ANY}
 func (res *Resolver) HandleMesos(w dns.ResponseWriter, r *dns.Msg) {
 	logging.CurLog.MesosRequests.Inc()
 
@@ -353,8 +301,6 @@ func (res *Resolver) HandleMesos(w dns.ResponseWriter, r *dns.Msg) {
 		errs.Add(res.handleSRV(rs, name, m, r))
 	case dns.TypeA:
 		errs.Add(res.handleA(rs, name, m))
-	case dns.TypeAAAA:
-		errs.Add(res.handleAAAA(rs, name, m))
 	case dns.TypeSOA:
 		errs.Add(res.handleSOA(m, r))
 	case dns.TypeNS:
@@ -363,7 +309,6 @@ func (res *Resolver) HandleMesos(w dns.ResponseWriter, r *dns.Msg) {
 		errs.Add(
 			res.handleSRV(rs, name, m, r),
 			res.handleA(rs, name, m),
-			res.handleAAAA(rs, name, m),
 			res.handleSOA(m, r),
 			res.handleNS(m, r),
 		)
@@ -381,13 +326,12 @@ func (res *Resolver) HandleMesos(w dns.ResponseWriter, r *dns.Msg) {
 		logging.CurLog.MesosFailed.Inc()
 	}
 
-	reply(w, m, res.config.SetTruncateBit)
+	reply(w, m)
 }
 
 func (res *Resolver) handleSRV(rs *records.RecordGenerator, name string, m, r *dns.Msg) error {
 	var errs multiError
-	aAdded := map[string]struct{}{}    // track the A RR's we've already added, avoid dups
-	aaaaAdded := map[string]struct{}{} // track the AAAA RR's we've already added, avoid dups
+	added := map[string]struct{}{} // track the A RR's we've already added, avoid dups
 	for srv := range rs.SRVs[name] {
 		srvRR, err := res.formatSRV(r.Question[0].Name, srv)
 		if err != nil {
@@ -396,32 +340,23 @@ func (res *Resolver) handleSRV(rs *records.RecordGenerator, name string, m, r *d
 		}
 
 		m.Answer = append(m.Answer, srvRR)
-		host, _, err := net.SplitHostPort(srv)
-		if err != nil {
-			logging.Error.Println(err)
-		}
-		if len(rs.As[host]) == 0 && len(rs.AAAAs[host]) == 0 {
+		host := strings.Split(srv, ":")[0]
+		if _, found := added[host]; found {
+			// avoid dups
 			continue
 		}
-		if _, aFound := aAdded[host]; !aFound {
-			if a, ok := rs.As.First(host); ok {
-				if aRR, err := res.formatA(host, a); err == nil {
-					m.Extra = append(m.Extra, aRR)
-					aAdded[host] = struct{}{}
-				} else {
-					errs.Add(err)
-				}
-			}
+		if len(rs.As[host]) == 0 {
+			continue
 		}
-		if _, aaaaFound := aaaaAdded[host]; !aaaaFound {
-			if aaaa, ok := rs.AAAAs.First(host); ok {
-				if aaaaRR, err := res.formatAAAA(host, aaaa); err == nil {
-					m.Extra = append(m.Extra, aaaaRR)
-					aaaaAdded[host] = struct{}{}
-				} else {
-					errs.Add(err)
-				}
+
+		if a, ok := rs.As.First(host); ok {
+			aRR, err := res.formatA(host, a)
+			if err != nil {
+				errs.Add(err)
+				continue
 			}
+			m.Extra = append(m.Extra, aRR)
+			added[host] = struct{}{}
 		}
 	}
 	return errs
@@ -431,19 +366,6 @@ func (res *Resolver) handleA(rs *records.RecordGenerator, name string, m *dns.Ms
 	var errs multiError
 	for a := range rs.As[name] {
 		rr, err := res.formatA(name, a)
-		if err != nil {
-			errs.Add(err)
-			continue
-		}
-		m.Answer = append(m.Answer, rr)
-	}
-	return errs
-}
-
-func (res *Resolver) handleAAAA(rs *records.RecordGenerator, name string, m *dns.Msg) error {
-	var errs multiError
-	for aaaa := range rs.AAAAs[name] {
-		rr, err := res.formatAAAA(name, aaaa)
 		if err != nil {
 			errs.Add(err)
 			continue
@@ -473,16 +395,26 @@ func (res *Resolver) handleEmpty(rs *records.RecordGenerator, name string, m, r 
 
 	m.Rcode = dns.RcodeNameError
 
+	// Because we don't implement AAAA records, AAAA queries will always
+	// go via this path
+	// Unfortunately, we don't implement AAAA queries in Mesos-DNS,
+	// and although the 'Not Implemented' error code seems more suitable,
+	// RFCs do not recommend it: https://tools.ietf.org/html/rfc4074
+	// Therefore we always return success, which is synonymous with NODATA
+	// to get a positive cache on no records AAAA
+	// Further information:
+	// PR: https://github.com/mesosphere/mesos-dns/pull/366
+	// Issue: https://github.com/mesosphere/mesos-dns/issues/363
+
 	// The second component is just a matter of returning NODATA if we have
 	// SRV or A records for the given name, but no neccessarily the given query
 
-	if len(rs.SRVs[name])+len(rs.As[name])+len(rs.AAAAs[name]) > 0 {
+	if (qType == dns.TypeAAAA) || (len(rs.SRVs[name])+len(rs.As[name]) > 0) {
 		m.Rcode = dns.RcodeSuccess
 	}
 
 	logging.CurLog.MesosNXDomain.Inc()
 	logging.VeryVerbose.Println("total A rrs:\t" + strconv.Itoa(len(rs.As)))
-	logging.VeryVerbose.Println("total AAAA rrs:\t" + strconv.Itoa(len(rs.AAAAs)))
 	logging.VeryVerbose.Println("failed looking for " + r.Question[0].String())
 
 	m.Ns = append(m.Ns, res.formatSOA(r.Question[0].Name))
@@ -492,11 +424,10 @@ func (res *Resolver) handleEmpty(rs *records.RecordGenerator, name string, m, r 
 
 // reply writes the given dns.Msg out to the given dns.ResponseWriter,
 // compressing the message first and truncating it accordingly.
-func reply(w dns.ResponseWriter, m *dns.Msg, setTruncateBit bool) {
+func reply(w dns.ResponseWriter, m *dns.Msg) {
 	m.Compress = true // https://github.com/mesosphere/mesos-dns/issues/{170,173,174}
-	maxsize := maxMsgSize(isUDP(w), m.IsEdns0())
-	truncate(m, maxsize, setTruncateBit)
-	if err := w.WriteMsg(m); err != nil {
+
+	if err := w.WriteMsg(truncate(m, isUDP(w))); err != nil {
 		logging.Error.Println(err)
 	}
 }
@@ -506,93 +437,54 @@ func isUDP(w dns.ResponseWriter) bool {
 	return strings.HasPrefix(w.RemoteAddr().Network(), "udp")
 }
 
-// maxMsgSize calculates the maximum size of a DNS message.
-// It takes into account whether or not the transport is UDP or TCP.
-// In the case of UDP it also checks for the presence of an EDNS0 (OPT)
-// record and if found, uses the maximum message size defined by that message.
-func maxMsgSize(udp bool, edns *dns.OPT) (size uint16) {
-	if !udp {
-		// The transport is TCP so we return the maximum message size
-		// valid for DNS messages sent over TCP.
-		return dns.MaxMsgSize
-	}
-	// The transport is UDP. By default the maximum message size for DNS
-	// messages over UDP is 512 bytes. This is defined by dns.MinMsgSize
-	// See 2.3.4 in https://tools.ietf.org/html/rfc1035
-	if edns == nil {
-		// This message does not specify EDNS0 (OPT) so we use the default
-		// maximum size
-		return dns.MinMsgSize
-	}
-	// The EDNS0 (OPT) record is specified in the request and specifies the
-	// message maximum size that the requestor can receive.
-	return edns.UDPSize()
-}
-
 // truncate removes answers until the given dns.Msg fits the permitted
 // length of the given transmission channel and sets the TC bit.
 // See https://tools.ietf.org/html/rfc1035#section-4.2.1
-// If `setTruncateBit` is true, the Truncate bit will be set if the message
-// has been truncated already or gets truncated here.
-// If `setTruncateBit` is false, the message will have its Truncate bit
-// cleared if it is already set, and won't set it even if it does get
-// truncated.
-func truncate(m *dns.Msg, max uint16, setTruncateBit bool) {
-	// truncate() mutates the input to avoid allocating new message objects
-	// and incurring the related performance cost.
-	furtherTruncation := m.Len() > int(max)
-	m.Truncated = m.Truncated || furtherTruncation
-	if !setTruncateBit {
-		// Clear the Truncate bit regardless of whether this message used
-		// to have it set set or whether we are going to truncate it here.
-		m.Truncated = false
+func truncate(m *dns.Msg, udp bool) *dns.Msg {
+	max := dns.MinMsgSize
+	if !udp {
+		max = dns.MaxMsgSize
+	} else if opt := m.IsEdns0(); opt != nil {
+		max = int(opt.UDPSize())
 	}
-	if !furtherTruncation {
-		return
-	}
-	// Drop all extra records first
-	m.Extra = nil
-	if m.Len() < int(max) {
-		// Now that the extra records have been dropped, the message size
-		// is under the maximum message size limit, so we return it without
-		// further modification.
-		return
-	}
-	// The message is still too large. We now truncate the list of answers
-	// the message size is smaller than max.
-	truncateAnswers(m, max)
-}
 
-func truncateAnswers(m *dns.Msg, max uint16) {
-	// Store the original list of answers.
-	answers := m.Answer
-	// Search for the maximum number of answers that can be sent to the
-	// client without the DNS message exceeding its maximum allowed size.
-	search := func(n int) bool {
-		// We shave answers from the back of the slice
-		// until we find the point where m.Len is < max.
-		// Whatever n is at that point will be returned.
-		m.Answer = answers[:len(answers)-n]
-		return m.Len() < int(max)
+	furtherTruncation := m.Len() > max
+	m.Truncated = m.Truncated || furtherTruncation
+
+	if !furtherTruncation {
+		return m
 	}
-	drop := sort.Search(len(answers), search)
-	// drop is the least number of answers that can be removed from the
-	// back of the answers slice in order to have m.Len() < max.
-	m.Answer = answers[:len(answers)-drop]
+
+	m.Extra = nil // Drop all extra records first
+	if m.Len() < max {
+		return m
+	}
+	answers := m.Answer[:]
+	left, right := 0, len(m.Answer)
+	for {
+		if left == right {
+			break
+		}
+		mid := (left + right) / 2
+		m.Answer = answers[:mid]
+		if m.Len() < max {
+			left = mid + 1
+			continue
+		}
+		right = mid
+	}
+	return m
 }
 
 func (res *Resolver) configureHTTP() {
 	// webserver + available routes
 	ws := new(restful.WebService)
-	ws.Consumes(restful.MIME_JSON)
-	ws.Produces(restful.MIME_JSON)
-
 	ws.Route(ws.GET("/v1/version").To(res.RestVersion))
 	ws.Route(ws.GET("/v1/config").To(res.RestConfig))
 	ws.Route(ws.GET("/v1/hosts/{host}").To(res.RestHost))
 	ws.Route(ws.GET("/v1/hosts/{host}/ports").To(res.RestPorts))
 	ws.Route(ws.GET("/v1/services/{service}").To(res.RestService))
-	ws.Route(ws.GET("/v1/registration/{service}").To(res.RestRegistration))
+  ws.Route(ws.GET("/v1/registration/{service}").To(res.RestRegistration))
 	if res.config.EnumerationOn {
 		ws.Route(ws.GET("/v1/enumerate").To(res.RestEnumerate))
 		ws.Route(ws.GET("/v1/axfr").To(res.RestAXFR))
@@ -643,9 +535,8 @@ func (res *Resolver) RestAXFR(req *restful.Request, resp *restful.Response) {
 	records := res.records()
 
 	AXFRRecords := models.AXFRRecords{
-		SRVs:  records.SRVs.ToAXFRResourceRecordSet(),
-		As:    records.As.ToAXFRResourceRecordSet(),
-		AAAAs: records.AAAAs.ToAXFRResourceRecordSet(),
+		SRVs: records.SRVs.ToAXFRResourceRecordSet(),
+		As:   records.As.ToAXFRResourceRecordSet(),
 	}
 	AXFR := models.AXFR{
 		Records:        AXFRRecords,
@@ -690,12 +581,8 @@ func (res *Resolver) RestHost(req *restful.Request, resp *restful.Response) {
 	}
 
 	aRRs := rs.As[dom]
-	aaaaRRs := rs.AAAAs[dom]
-	records := make([]record, 0, len(aRRs)+len(aaaaRRs))
+	records := make([]record, 0, len(aRRs))
 	for ip := range aRRs {
-		records = append(records, record{dom, ip})
-	}
-	for ip := range aaaaRRs {
 		records = append(records, record{dom, ip})
 	}
 
@@ -757,12 +644,11 @@ func (res *Resolver) RestService(req *restful.Request, resp *restful.Response) {
 			logging.Error.Println(err)
 			continue
 		}
-		if aR, aOk := rs.As.First(host); aOk {
-			records = append(records, record{service, host, aR, port})
+		var ip string
+		if r, ok := rs.As.First(host); ok {
+			ip = r
 		}
-		if aaaaR, aaaaOk := rs.AAAAs.First(host); aaaaOk {
-			records = append(records, record{service, host, aaaaR, port})
-		}
+		records = append(records, record{service, host, ip, port})
 	}
 
 	if len(records) == 0 {
@@ -776,6 +662,7 @@ func (res *Resolver) RestService(req *restful.Request, resp *restful.Response) {
 	stats(dom, res.config.Domain+".", len(srvRRs) > 0)
 }
 
+// RestService handles HTTP requests of DNS SRV records for the given name.
 func (res *Resolver) RestRegistration(req *restful.Request, resp *restful.Response) {
 	service := req.PathParameter("service")
 	// clean up service name
@@ -785,7 +672,7 @@ func (res *Resolver) RestRegistration(req *restful.Request, resp *restful.Respon
 	}
 	rs := res.records()
 
-	type hostRecord struct {
+	type record struct {
 		IPAddress string `json:"ip_address"`
 		Port      string `json:"port"`
 	}
@@ -797,26 +684,25 @@ func (res *Resolver) RestRegistration(req *restful.Request, resp *restful.Respon
 	// }
 
 	srvRRs := rs.SRVs[dom]
-	hosts := make([]hostRecord, 0, len(srvRRs))
+	records := make([]record, 0, len(srvRRs))
 	for s := range srvRRs {
 		host, port, err := net.SplitHostPort(s)
 		if err != nil {
 			logging.Error.Println(err)
 			continue
 		}
-		if aR, aOk := rs.As.First(host); aOk {
-			records = append(hosts, hostRecord{aR, port})
+		var ip string
+		if r, ok := rs.As.First(host); ok {
+			ip = r
 		}
-		if aaaaR, aaaaOk := rs.AAAAs.First(host); aaaaOk {
-			records = append(records, hostRecord{aaaaR, port})
-		}
+		records = append(records, record{ip, port})
 	}
 
-	if len(records) == 0 {
-		records = append(hosts, hostRecord{})
+	if len(hosts) == 0 {
+		records = append(records, record{})
 	}
 
-	if err := resp.WriteAsJson(hosts); err != nil {
+	if err := resp.WriteAsJson(records); err != nil {
 		logging.Error.Println(err)
 	}
 
