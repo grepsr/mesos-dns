@@ -592,6 +592,7 @@ func (res *Resolver) configureHTTP() {
 	ws.Route(ws.GET("/v1/hosts/{host}").To(res.RestHost))
 	ws.Route(ws.GET("/v1/hosts/{host}/ports").To(res.RestPorts))
 	ws.Route(ws.GET("/v1/services/{service}").To(res.RestService))
+	ws.Route(ws.GET("/v1/registration/{service}").To(res.RestRegistration))
 	if res.config.EnumerationOn {
 		ws.Route(ws.GET("/v1/enumerate").To(res.RestEnumerate))
 		ws.Route(ws.GET("/v1/axfr").To(res.RestAXFR))
@@ -769,6 +770,53 @@ func (res *Resolver) RestService(req *restful.Request, resp *restful.Response) {
 	}
 
 	if err := resp.WriteAsJson(records); err != nil {
+		logging.Error.Println(err)
+	}
+
+	stats(dom, res.config.Domain+".", len(srvRRs) > 0)
+}
+
+func (res *Resolver) RestRegistration(req *restful.Request, resp *restful.Response) {
+	service := req.PathParameter("service")
+	// clean up service name
+	dom := strings.ToLower(cleanWild(service))
+	if dom[len(dom)-1] != '.' {
+		dom += "."
+	}
+	rs := res.records()
+
+	type hostRecord struct {
+		IPAddress string `json:"ip_address"`
+		Port      string `json:"port"`
+	}
+
+	// type tags struct {
+	// 	AZ                  string `json:"az"`
+	// 	Canary              string `json:"canary"`
+	// 	LoadBalancingWeight string `json:"load_balancing_weight"`
+	// }
+
+	srvRRs := rs.SRVs[dom]
+	hosts := make([]hostRecord, 0, len(srvRRs))
+	for s := range srvRRs {
+		host, port, err := net.SplitHostPort(s)
+		if err != nil {
+			logging.Error.Println(err)
+			continue
+		}
+		if aR, aOk := rs.As.First(host); aOk {
+			records = append(hosts, hostRecord{aR, port})
+		}
+		if aaaaR, aaaaOk := rs.AAAAs.First(host); aaaaOk {
+			records = append(records, hostRecord{aaaaR, port})
+		}
+	}
+
+	if len(records) == 0 {
+		records = append(hosts, hostRecord{})
+	}
+
+	if err := resp.WriteAsJson(hosts); err != nil {
 		logging.Error.Println(err)
 	}
 
