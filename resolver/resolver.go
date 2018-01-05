@@ -670,11 +670,8 @@ func (res *Resolver) RestRegistration(req *restful.Request, resp *restful.Respon
 	// clean up service name
 	dom := strings.ToLower(cleanWild(service))
 	framework, ok := os.LookupEnv("MESOS_FRAMEWORK")
-	if ok != nil {
+	if ok == false {
 		logging.Error.Println("MESOS_FRAMEWORK environment variable not set")
-		continue
-	}
-	if framework == nil {
 		dom = fmt.Sprintf("_%s._tcp.%s", dom, res.config.Domain)
 	} else {
 		dom = fmt.Sprintf("_%s._tcp.%s.%s", dom, framework, res.config.Domain)
