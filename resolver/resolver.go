@@ -682,18 +682,13 @@ func (res *Resolver) RestRegistration(req *restful.Request, resp *restful.Respon
 	}
 	rs := res.records()
 
-	// type record struct {
-	// 	IPAddress string `json:"ip_address"`
-	// 	Port      int   `json:"port"`
-	// }
-
-	type record struct {
-		Hosts []hostRecord `json:"hosts"`
-	}
-
 	type hostRecord struct {
 		IPAddress string `json:"ip_address"`
 		Port      int   `json:"port"`
+	}
+
+	type record struct {
+		Hosts []hostRecord `json:"hosts"`
 	}
 
 	// type tags struct {
