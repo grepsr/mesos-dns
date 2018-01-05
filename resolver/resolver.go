@@ -682,7 +682,16 @@ func (res *Resolver) RestRegistration(req *restful.Request, resp *restful.Respon
 	}
 	rs := res.records()
 
+	// type record struct {
+	// 	IPAddress string `json:"ip_address"`
+	// 	Port      int   `json:"port"`
+	// }
+
 	type record struct {
+		Hosts []hostRecord `json:"hosts"`
+	}
+
+	type hostRecord struct {
 		IPAddress string `json:"ip_address"`
 		Port      int   `json:"port"`
 	}
@@ -694,7 +703,7 @@ func (res *Resolver) RestRegistration(req *restful.Request, resp *restful.Respon
 	// }
 
 	srvRRs := rs.SRVs[dom]
-	records := make([]record, 0, len(srvRRs))
+	hostRecords := make([]hostRecord, 0, len(srvRRs))
 	for s := range srvRRs {
 		host, port, err := net.SplitHostPort(s)
 		if err != nil {
@@ -710,13 +719,10 @@ func (res *Resolver) RestRegistration(req *restful.Request, resp *restful.Respon
 		if r, ok := rs.As.First(host); ok {
 			ip = r
 		}
-		records = append(records, record{ip, p})
+		hostRecords = append(hostRecords, hostRecord{ip, p})
 	}
 
-	// Return an empty list if no record is present
-	// if len(records) == 0 {
-	// 	records = append(records, record{})
-	// }
+	records := record{Hosts: hostRecords}
 
 	if err := resp.WriteAsJson(records); err != nil {
 		logging.Error.Println(err)
