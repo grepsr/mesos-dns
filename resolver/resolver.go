@@ -665,8 +665,11 @@ func (res *Resolver) RestService(req *restful.Request, resp *restful.Response) {
 // RestService handles HTTP requests of DNS SRV records for the given name.
 func (res *Resolver) RestRegistration(req *restful.Request, resp *restful.Response) {
 	service := req.PathParameter("service")
+
 	// clean up service name
 	dom := strings.ToLower(cleanWild(service))
+	dom = fmt.Sprintf("_%s._tcp.%s.%s", dom, res.config.MesosFramework, res.config.Domain)
+
 	if dom[len(dom)-1] != '.' {
 		dom += "."
 	}
@@ -703,9 +706,10 @@ func (res *Resolver) RestRegistration(req *restful.Request, resp *restful.Respon
 		records = append(records, record{ip, p})
 	}
 
-	if len(records) == 0 {
-		records = append(records, record{})
-	}
+	// Return an empty list if no record is present
+	// if len(records) == 0 {
+	// 	records = append(records, record{})
+	// }
 
 	if err := resp.WriteAsJson(records); err != nil {
 		logging.Error.Println(err)
