@@ -748,7 +748,7 @@ func (res *Resolver) RestClusters(req *restful.Request, resp *restful.Response) 
 	}
 
 	rs := res.records()
-	srvs := rs.SRVS
+	srvs := rs.SRVs
 
 	clusterRecords := make([]clusterRecord, 0, len(srvs))
 
