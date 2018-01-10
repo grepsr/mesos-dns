@@ -753,36 +753,36 @@ func (res *Resolver) RestClusters(req *restful.Request, resp *restful.Response) 
 	clusterRecords := make([]clusterRecord, 0, len(srvs))
 
 	for k := range srvs {
-		if strings.HasSuffix(k, "-service") {
-			srvRRs := rs.SRVs[k]
-			hostRecords := make([]hostRecord, 0, len(srvRRs))
-			for s := range srvRRs {
-				host, port, err := net.SplitHostPort(s)
-				if err != nil {
-					logging.Error.Println(err)
-					continue
-				}
-				p, err := strconv.Atoi(port)
-				if err != nil {
-					logging.Error.Println(err)
-					continue
-				}
-				var ip string
-				if r, ok := rs.As.First(host); ok {
-					ip = r
-				}
-				url := fmt.Sprintf("tcp://%s:%d", ip, p)
-				hostRecords = append(hostRecords, hostRecord{url})
+		// if strings.HasSuffix(k, "-service") {
+		srvRRs := rs.SRVs[k]
+		hostRecords := make([]hostRecord, 0, len(srvRRs))
+		for s := range srvRRs {
+			host, port, err := net.SplitHostPort(s)
+			if err != nil {
+				logging.Error.Println(err)
+				continue
 			}
-			clusterRec := clusterRecord{
-				Name:             k,
-				Type:             "static",
-				ConnectTimeoutMs: 2000,
-				LBType:           "round_robin",
-				Hosts:            hostRecords,
+			p, err := strconv.Atoi(port)
+			if err != nil {
+				logging.Error.Println(err)
+				continue
 			}
-			clusterRecords = append(clusterRecords, clusterRec)
+			var ip string
+			if r, ok := rs.As.First(host); ok {
+				ip = r
+			}
+			url := fmt.Sprintf("tcp://%s:%d", ip, p)
+			hostRecords = append(hostRecords, hostRecord{url})
 		}
+		clusterRec := clusterRecord{
+			Name:             k,
+			Type:             "static",
+			ConnectTimeoutMs: 2000,
+			LBType:           "round_robin",
+			Hosts:            hostRecords,
+		}
+		clusterRecords = append(clusterRecords, clusterRec)
+		// }
 	}
 
 	records := record{Clusters: clusterRecords}
