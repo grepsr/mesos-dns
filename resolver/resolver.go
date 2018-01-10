@@ -741,6 +741,7 @@ func (res *Resolver) RestClusters(req *restful.Request, resp *restful.Response) 
 		Type             string       `json:"type"`
 		ConnectTimeoutMs int          `json:"connect_timeout_ms"`
 		LBType           string       `json:"lb_type"`
+		Features         string       `json:"features"`
 		Hosts            []hostRecord `json:"hosts"`
 	}
 
@@ -787,6 +788,7 @@ func (res *Resolver) RestClusters(req *restful.Request, resp *restful.Response) 
 				Type:             "static",
 				ConnectTimeoutMs: connectTimeout,
 				LBType:           lbType,
+				Features:         "http2",
 				Hosts:            hostRecords,
 			}
 			clusterRecords = append(clusterRecords, clusterRec)
