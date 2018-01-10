@@ -729,8 +729,8 @@ func (res *Resolver) RestRegistration(req *restful.Request, resp *restful.Respon
 
 func (res *Resolver) RestClusters(req *restful.Request, resp *restful.Response) {
 	// Unused
-	service_cluster := req.PathParameter("service_cluster")
-	service_node := req.PathParameter("service_node")
+	// service_cluster := req.PathParameter("service_cluster")
+	// service_node := req.PathParameter("service_node")
 
 	type hostRecord struct {
 		URL string `json:"url"`
@@ -752,7 +752,7 @@ func (res *Resolver) RestClusters(req *restful.Request, resp *restful.Response) 
 
 	clusterRecords := make([]clusterRecord, 0, len(srvs))
 
-	for k, v := range srvs {
+	for k := range srvs {
 		if strings.HasSuffix(k, "-service") {
 			srvRRs := rs.SRVs[k]
 			hostRecords := make([]hostRecord, 0, len(srvRRs))
