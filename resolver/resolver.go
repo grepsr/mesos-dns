@@ -2,12 +2,12 @@
 package resolver
 
 import (
-	"os"
 	"errors"
 	"fmt"
 	"math/rand"
 	"net"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -485,7 +485,7 @@ func (res *Resolver) configureHTTP() {
 	ws.Route(ws.GET("/v1/hosts/{host}").To(res.RestHost))
 	ws.Route(ws.GET("/v1/hosts/{host}/ports").To(res.RestPorts))
 	ws.Route(ws.GET("/v1/services/{service}").To(res.RestService))
-  ws.Route(ws.GET("/v1/registration/{service}").To(res.RestRegistration))
+	ws.Route(ws.GET("/v1/registration/{service}").To(res.RestRegistration))
 	ws.Route(ws.GET("/v1/clusters/{service_cluster}/{service_node}").To(res.RestClusters))
 	if res.config.EnumerationOn {
 		ws.Route(ws.GET("/v1/enumerate").To(res.RestEnumerate))
@@ -685,7 +685,7 @@ func (res *Resolver) RestRegistration(req *restful.Request, resp *restful.Respon
 
 	type hostRecord struct {
 		IPAddress string `json:"ip_address"`
-		Port      int   `json:"port"`
+		Port      int    `json:"port"`
 	}
 
 	type record struct {
@@ -736,11 +736,11 @@ func (res *Resolver) RestClusters(req *restful.Request, resp *restful.Response) 
 		URL string `json:"url"`
 	}
 	type clusterRecord struct {
-		Name               string `json:"name"`
-		Type               string `json:"type"`
-		ConnectTimeoutMs   int `json:"connect_timeout_ms"`
-		LBType             string `json:"lb_type"`
-		Hosts              []hostRecord `json:"hosts"`
+		Name             string       `json:"name"`
+		Type             string       `json:"type"`
+		ConnectTimeoutMs int          `json:"connect_timeout_ms"`
+		LBType           string       `json:"lb_type"`
+		Hosts            []hostRecord `json:"hosts"`
 	}
 
 	type record struct {
@@ -771,15 +771,15 @@ func (res *Resolver) RestClusters(req *restful.Request, resp *restful.Response) 
 				if r, ok := rs.As.First(host); ok {
 					ip = r
 				}
-				url := fmt.Sprintf("tcp://%s:%s", ip, p)
+				url := fmt.Sprintf("tcp://%s:%d", ip, p)
 				hostRecords = append(hostRecords, hostRecord{url})
 			}
 			clusterRec := clusterRecord{
-				Name: k,
-				Type: "static",
+				Name:             k,
+				Type:             "static",
 				ConnectTimeoutMs: 2000,
-				LBType: "round_robin",
-				Hosts: hostRecords
+				LBType:           "round_robin",
+				Hosts:            hostRecords,
 			}
 			clusterRecords = append(clusterRecords, clusterRec)
 		}
