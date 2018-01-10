@@ -755,6 +755,7 @@ func (res *Resolver) RestClusters(req *restful.Request, resp *restful.Response) 
 		logging.Error.Println(err)
 	}
 	lbType := getEnv("CDS_CLUSTER_LB_TYPE", "round_robin")
+	suffix := getEnv("CDS_CLUSTER_NAME_SUFFIX", "service")
 
 	rs := res.records()
 	srvs := rs.SRVs
@@ -762,7 +763,7 @@ func (res *Resolver) RestClusters(req *restful.Request, resp *restful.Response) 
 
 	for k := range srvs {
 		splitKey := strings.Split(k, ".")
-		if len(splitKey) > 2 && splitKey[1] == "_tcp" && strings.HasSuffix(splitKey[0], "-service") {
+		if len(splitKey) > 2 && splitKey[1] == "_tcp" && strings.HasSuffix(splitKey[0], suffix) {
 			srvRRs := rs.SRVs[k]
 			hostRecords := make([]hostRecord, 0, len(srvRRs))
 			for s := range srvRRs {
