@@ -756,43 +756,50 @@ func (res *Resolver) RestClusters(req *restful.Request, resp *restful.Response) 
 	}
 	lbType := getEnv("CDS_CLUSTER_LB_TYPE", "round_robin")
 	suffix := getEnv("CDS_CLUSTER_NAME_SUFFIX", "service")
+	features := getEnv("CDS_CLUSTER_FEATURES", "http2")
 
 	rs := res.records()
 	srvs := rs.SRVs
 	clusterRecords := make([]clusterRecord, 0, len(srvs))
 
+	var addedNames []string
+
 	for k := range srvs {
 		splitKey := strings.Split(k, ".")
 		if len(splitKey) > 2 && splitKey[1] == "_tcp" && strings.HasSuffix(splitKey[0], suffix) {
-			srvRRs := rs.SRVs[k]
-			hostRecords := make([]hostRecord, 0, len(srvRRs))
-			for s := range srvRRs {
-				host, port, err := net.SplitHostPort(s)
-				if err != nil {
-					logging.Error.Println(err)
-					continue
+			name := strings.Replace(splitKey[0], "_", "", 1)
+			if contains(addedNames, name) == false {
+				addedNames = append(addedNames, name)
+				srvRRs := rs.SRVs[k]
+				hostRecords := make([]hostRecord, 0, len(srvRRs))
+				for s := range srvRRs {
+					host, port, err := net.SplitHostPort(s)
+					if err != nil {
+						logging.Error.Println(err)
+						continue
+					}
+					p, err := strconv.Atoi(port)
+					if err != nil {
+						logging.Error.Println(err)
+						continue
+					}
+					var ip string
+					if r, ok := rs.As.First(host); ok {
+						ip = r
+					}
+					url := fmt.Sprintf("tcp://%s:%d", ip, p)
+					hostRecords = append(hostRecords, hostRecord{url})
 				}
-				p, err := strconv.Atoi(port)
-				if err != nil {
-					logging.Error.Println(err)
-					continue
+				clusterRec := clusterRecord{
+					Name:             name,
+					Type:             "static",
+					ConnectTimeoutMs: connectTimeout,
+					LBType:           lbType,
+					Features:         features,
+					Hosts:            hostRecords,
 				}
-				var ip string
-				if r, ok := rs.As.First(host); ok {
-					ip = r
-				}
-				url := fmt.Sprintf("tcp://%s:%d", ip, p)
-				hostRecords = append(hostRecords, hostRecord{url})
+				clusterRecords = append(clusterRecords, clusterRec)
 			}
-			clusterRec := clusterRecord{
-				Name:             strings.Replace(splitKey[0], "_", "", 1),
-				Type:             "static",
-				ConnectTimeoutMs: connectTimeout,
-				LBType:           lbType,
-				Features:         "http2",
-				Hosts:            hostRecords,
-			}
-			clusterRecords = append(clusterRecords, clusterRec)
 		}
 	}
 
@@ -864,4 +871,13 @@ func getEnv(key, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func contains(arr []string, str string) bool {
+	for _, a := range arr {
+		if a == str {
+			return true
+		}
+	}
+	return false
 }
