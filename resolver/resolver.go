@@ -664,7 +664,7 @@ func (res *Resolver) RestService(req *restful.Request, resp *restful.Response) {
 	stats(dom, res.config.Domain+".", len(srvRRs) > 0)
 }
 
-// RestService handles HTTP requests of DNS SRV records for the given name.
+// RestRegistration handles HTTP requests of registrations for the given name.
 func (res *Resolver) RestRegistration(req *restful.Request, resp *restful.Response) {
 	service := req.PathParameter("service")
 
@@ -727,6 +727,7 @@ func (res *Resolver) RestRegistration(req *restful.Request, resp *restful.Respon
 	stats(dom, res.config.Domain+".", len(srvRRs) > 0)
 }
 
+// RestClusters handles HTTP requests for clusters.
 func (res *Resolver) RestClusters(req *restful.Request, resp *restful.Response) {
 	// Unused
 	// service_cluster := req.PathParameter("service_cluster")
