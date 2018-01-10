@@ -730,8 +730,8 @@ func (res *Resolver) RestRegistration(req *restful.Request, resp *restful.Respon
 // RestClusters handles HTTP requests for clusters.
 func (res *Resolver) RestClusters(req *restful.Request, resp *restful.Response) {
 	// Unused
-	// service_cluster := req.PathParameter("service_cluster")
-	// service_node := req.PathParameter("service_node")
+	// serviceCluster := req.PathParameter("service_cluster")
+	// serviceNode := req.PathParameter("service_node")
 
 	type hostRecord struct {
 		URL string `json:"url"`
@@ -748,42 +748,49 @@ func (res *Resolver) RestClusters(req *restful.Request, resp *restful.Response) 
 		Clusters []clusterRecord `json:"clusters"`
 	}
 
+	connectTimeout, err := strconv.Atoi(getEnv("CDS_CLUSTER_TIMEOUT_MS", "2000"))
+	if err != nil {
+		connectTimeout = 2000
+		logging.Error.Println(err)
+	}
+	lbType := getEnv("CDS_CLUSTER_LB_TYPE", "round_robin")
+
 	rs := res.records()
 	srvs := rs.SRVs
-
 	clusterRecords := make([]clusterRecord, 0, len(srvs))
 
 	for k := range srvs {
-		// if strings.HasSuffix(k, "-service") {
-		srvRRs := rs.SRVs[k]
-		hostRecords := make([]hostRecord, 0, len(srvRRs))
-		for s := range srvRRs {
-			host, port, err := net.SplitHostPort(s)
-			if err != nil {
-				logging.Error.Println(err)
-				continue
+		splitKey := strings.Split(k, ".")
+		if len(splitKey) > 2 && splitKey[1] == "_tcp" && strings.HasSuffix(splitKey[0], "-service") {
+			srvRRs := rs.SRVs[k]
+			hostRecords := make([]hostRecord, 0, len(srvRRs))
+			for s := range srvRRs {
+				host, port, err := net.SplitHostPort(s)
+				if err != nil {
+					logging.Error.Println(err)
+					continue
+				}
+				p, err := strconv.Atoi(port)
+				if err != nil {
+					logging.Error.Println(err)
+					continue
+				}
+				var ip string
+				if r, ok := rs.As.First(host); ok {
+					ip = r
+				}
+				url := fmt.Sprintf("tcp://%s:%d", ip, p)
+				hostRecords = append(hostRecords, hostRecord{url})
 			}
-			p, err := strconv.Atoi(port)
-			if err != nil {
-				logging.Error.Println(err)
-				continue
+			clusterRec := clusterRecord{
+				Name:             strings.Replace(splitKey[0], "_", "", 1),
+				Type:             "static",
+				ConnectTimeoutMs: connectTimeout,
+				LBType:           lbType,
+				Hosts:            hostRecords,
 			}
-			var ip string
-			if r, ok := rs.As.First(host); ok {
-				ip = r
-			}
-			url := fmt.Sprintf("tcp://%s:%d", ip, p)
-			hostRecords = append(hostRecords, hostRecord{url})
+			clusterRecords = append(clusterRecords, clusterRec)
 		}
-		clusterRec := clusterRecord{
-			Name:             k,
-			Type:             "static",
-			ConnectTimeoutMs: 2000,
-			LBType:           "round_robin",
-			Hosts:            hostRecords,
-		}
-		clusterRecords = append(clusterRecords, clusterRec)
-		// }
 	}
 
 	records := record{Clusters: clusterRecords}
@@ -847,4 +854,11 @@ func (e multiError) Nil() bool {
 		}
 	}
 	return true
+}
+
+func getEnv(key, fallback string) string {
+	if value, ok := os.LookupEnv(key); ok {
+		return value
+	}
+	return fallback
 }
