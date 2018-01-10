@@ -486,6 +486,7 @@ func (res *Resolver) configureHTTP() {
 	ws.Route(ws.GET("/v1/hosts/{host}/ports").To(res.RestPorts))
 	ws.Route(ws.GET("/v1/services/{service}").To(res.RestService))
   ws.Route(ws.GET("/v1/registration/{service}").To(res.RestRegistration))
+	ws.Route(ws.GET("/v1/clusters/{service_cluster}/{service_node}").To(res.RestClusters))
 	if res.config.EnumerationOn {
 		ws.Route(ws.GET("/v1/enumerate").To(res.RestEnumerate))
 		ws.Route(ws.GET("/v1/axfr").To(res.RestAXFR))
@@ -724,6 +725,71 @@ func (res *Resolver) RestRegistration(req *restful.Request, resp *restful.Respon
 	}
 
 	stats(dom, res.config.Domain+".", len(srvRRs) > 0)
+}
+
+func (res *Resolver) RestClusters(req *restful.Request, resp *restful.Response) {
+	// Unused
+	service_cluster := req.PathParameter("service_cluster")
+	service_node := req.PathParameter("service_node")
+
+	type hostRecord struct {
+		URL string `json:"url"`
+	}
+	type clusterRecord struct {
+		Name               string `json:"name"`
+		Type               string `json:"type"`
+		ConnectTimeoutMs   int `json:"connect_timeout_ms"`
+		LBType             string `json:"lb_type"`
+		Hosts              []hostRecord `json:"hosts"`
+	}
+
+	type record struct {
+		Clusters []clusterRecord `json:"clusters"`
+	}
+
+	rs := res.records()
+	srvs := rs.SRVS
+
+	clusterRecords := make([]clusterRecord, 0, len(srvs))
+
+	for k, v := range srvs {
+		if strings.HasSuffix(k, "-service") {
+			srvRRs := rs.SRVs[k]
+			hostRecords := make([]hostRecord, 0, len(srvRRs))
+			for s := range srvRRs {
+				host, port, err := net.SplitHostPort(s)
+				if err != nil {
+					logging.Error.Println(err)
+					continue
+				}
+				p, err := strconv.Atoi(port)
+				if err != nil {
+					logging.Error.Println(err)
+					continue
+				}
+				var ip string
+				if r, ok := rs.As.First(host); ok {
+					ip = r
+				}
+				url := fmt.Sprintf("tcp://%s:%s", ip, p)
+				hostRecords = append(hostRecords, hostRecord{url})
+			}
+			clusterRec := clusterRecord{
+				Name: k,
+				Type: "static",
+				ConnectTimeoutMs: 2000,
+				LBType: "round_robin",
+				Hosts: hostRecords
+			}
+			clusterRecords = append(clusterRecords, clusterRec)
+		}
+	}
+
+	records := record{Clusters: clusterRecords}
+
+	if err := resp.WriteAsJson(records); err != nil {
+		logging.Error.Println(err)
+	}
 }
 
 // panicRecover catches any panics from the resolvers and sets an error
