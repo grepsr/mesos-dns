@@ -805,6 +805,7 @@ func (res *Resolver) RestClusters(req *restful.Request, resp *restful.Response) 
 					Hosts:            hostRecords,
 				}
 				clusterRecords = append(clusterRecords, clusterRec)
+				urls = urls[:0]
 			}
 		}
 	}
