@@ -764,7 +764,6 @@ func (res *Resolver) RestClusters(req *restful.Request, resp *restful.Response) 
 	clusterRecords := make([]clusterRecord, 0, len(srvs))
 
 	var addedNames []string
-	var urls []string
 
 	for k := range srvs {
 		splitKey := strings.Split(k, ".")
@@ -790,12 +789,11 @@ func (res *Resolver) RestClusters(req *restful.Request, resp *restful.Response) 
 						ip = r
 					}
 					url := fmt.Sprintf("tcp://%s:%d", ip, p)
-					urls = append(urls, url)
+					hostRecords = append(hostRecords, hostRecord{url})
 				}
-				sort.Strings(urls)
-				for _, u := range urls {
-					hostRecords = append(hostRecords, hostRecord{u})
-				}
+				sort.Slice(hostRecords, func(i, j int) bool {
+					return hostRecords[i].URL < hostRecords[j].URL
+				})
 				clusterRec := clusterRecord{
 					Name:             name,
 					Type:             "static",
@@ -805,11 +803,12 @@ func (res *Resolver) RestClusters(req *restful.Request, resp *restful.Response) 
 					Hosts:            hostRecords,
 				}
 				clusterRecords = append(clusterRecords, clusterRec)
-				urls = urls[:0]
 			}
 		}
 	}
-
+	sort.Slice(clusterRecords, func(i, j int) bool {
+		return clusterRecords[i].Name < clusterRecords[j].Name
+	})
 	records := record{Clusters: clusterRecords}
 
 	if err := resp.WriteAsJson(records); err != nil {
