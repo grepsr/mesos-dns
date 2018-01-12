@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -763,6 +764,7 @@ func (res *Resolver) RestClusters(req *restful.Request, resp *restful.Response) 
 	clusterRecords := make([]clusterRecord, 0, len(srvs))
 
 	var addedNames []string
+	var urls []string
 
 	for k := range srvs {
 		splitKey := strings.Split(k, ".")
@@ -788,7 +790,11 @@ func (res *Resolver) RestClusters(req *restful.Request, resp *restful.Response) 
 						ip = r
 					}
 					url := fmt.Sprintf("tcp://%s:%d", ip, p)
-					hostRecords = append(hostRecords, hostRecord{url})
+					urls = append(urls, url)
+				}
+				sort.Strings(urls)
+				for _, u := range urls {
+					hostRecords = append(hostRecords, hostRecord{u})
 				}
 				clusterRec := clusterRecord{
 					Name:             name,
